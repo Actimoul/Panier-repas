@@ -1,0 +1,427 @@
+/* ============================================================
+   Panier Repas — design tokens
+   Direction : étal de primeur + ticket de caisse.
+   Porcelaine / encre / basilic / paprika. Le ticket (liste de
+   courses à bords crantés, chiffres en mono) est la signature.
+   ============================================================ */
+:root {
+  --porcelain: #F4F3EE;
+  --ink: #1C2321;
+  --ink-soft: #4B5450;
+  --basil: #2F6B3C;
+  --basil-deep: #1F4A29;
+  --paprika: #D2481F;
+  --line: #D9D6CC;
+  --card: #FFFFFF;
+  --ok: #2F6B3C;
+  --warn: #B3541E;
+
+  --font-display: "Sora", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --radius: 12px;
+  --pad: 16px;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font-body);
+  background: var(--porcelain);
+  color: var(--ink);
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: calc(64px + env(safe-area-inset-bottom));
+}
+
+/* ---------- header ---------- */
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px var(--pad) 10px;
+  position: sticky;
+  top: 0;
+  background: var(--porcelain);
+  z-index: 5;
+  border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand-mark {
+  width: 14px; height: 14px;
+  background: var(--basil);
+  border-radius: 3px;
+  transform: rotate(45deg);
+  display: inline-block;
+}
+.app-header h1 {
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  margin: 0;
+  text-transform: uppercase;
+}
+.icon-btn {
+  background: none; border: 1px solid var(--line);
+  border-radius: 50%;
+  width: 36px; height: 36px;
+  font-size: 1rem;
+  cursor: pointer;
+  color: var(--ink-soft);
+}
+.icon-btn:hover { border-color: var(--basil); color: var(--basil); }
+
+/* ---------- layout ---------- */
+.view { flex: 1; padding: var(--pad); max-width: 720px; width: 100%; margin: 0 auto; }
+.section-title {
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-soft);
+  margin: 20px 0 8px;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--pad);
+  margin-bottom: 12px;
+}
+
+/* ---------- tabbar ---------- */
+.tabbar {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  display: flex;
+  background: var(--card);
+  border-top: 1px solid var(--line);
+  padding-bottom: env(safe-area-inset-bottom);
+  z-index: 10;
+}
+.tab {
+  flex: 1;
+  border: none;
+  background: none;
+  padding: 12px 4px 10px;
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  cursor: pointer;
+  border-top: 3px solid transparent;
+}
+.tab.active { color: var(--basil-deep); border-top-color: var(--basil); }
+.tab:focus-visible { outline: 2px solid var(--basil); outline-offset: -2px; }
+
+/* ---------- forms ---------- */
+label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 12px; color: var(--ink); }
+input, select, textarea {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  color: var(--ink);
+}
+input:focus-visible, select:focus-visible, textarea:focus-visible, .btn:focus-visible {
+  outline: 2px solid var(--basil);
+  outline-offset: 1px;
+}
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+.hint { font-size: 0.78rem; color: var(--ink-soft); margin: 4px 0 12px; }
+
+.btn {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.9rem;
+  padding: 12px 18px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.btn.primary { background: var(--basil); color: #fff; }
+.btn.primary:hover { background: var(--basil-deep); }
+.btn.primary:disabled { background: var(--line); color: var(--ink-soft); cursor: default; }
+.btn.ghost { background: none; border-color: var(--line); color: var(--ink); }
+.btn.ghost:hover { border-color: var(--basil); color: var(--basil-deep); }
+.btn.danger { background: none; border-color: var(--line); color: var(--paprika); }
+.btn.block { width: 100%; }
+.btn-row { display: flex; gap: 10px; margin: 12px 0; }
+.btn-row .btn { flex: 1; }
+
+/* ---------- semaine ---------- */
+.day-macros {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  margin-bottom: 8px;
+}
+.day-pill {
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  padding: 8px 10px;
+  text-align: center;
+  min-width: 76px;
+}
+.day-pill .d { font-family: var(--font-display); font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: var(--ink-soft); }
+.day-pill .kcal { font-family: var(--font-mono); font-weight: 600; font-size: 0.9rem; }
+.day-pill .prot { font-family: var(--font-mono); font-size: 0.75rem; color: var(--basil-deep); }
+
+.recipe { border-left: 4px solid var(--basil); }
+.recipe h3 { margin: 0 0 4px; font-family: var(--font-display); font-size: 1rem; font-weight: 700; }
+.recipe .meta { font-family: var(--font-mono); font-size: 0.78rem; color: var(--ink-soft); margin-bottom: 8px; }
+.recipe ul { margin: 8px 0; padding-left: 18px; font-size: 0.88rem; }
+.recipe ol { margin: 8px 0; padding-left: 18px; font-size: 0.88rem; }
+.recipe details summary { cursor: pointer; font-weight: 600; font-size: 0.85rem; color: var(--basil-deep); }
+
+.empty {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--ink-soft);
+}
+.empty h2 { font-family: var(--font-display); font-size: 1.1rem; color: var(--ink); }
+
+.loading { text-align: center; padding: 30px; color: var(--ink-soft); }
+.loading::after {
+  content: "";
+  display: block;
+  width: 26px; height: 26px;
+  margin: 14px auto 0;
+  border: 3px solid var(--line);
+  border-top-color: var(--basil);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .loading::after { animation: none; }
+}
+
+/* ---------- LE TICKET (signature) ---------- */
+.ticket {
+  background: #fff;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  padding: 18px 16px 26px;
+  margin: 10px 0 16px;
+  position: relative;
+  box-shadow: 0 2px 10px rgba(28, 35, 33, 0.08);
+  /* bords crantés haut et bas */
+  --notch: 10px;
+  clip-path: polygon(
+    0 6px, 3% 0, 6% 6px, 9% 0, 12% 6px, 15% 0, 18% 6px, 21% 0, 24% 6px, 27% 0,
+    30% 6px, 33% 0, 36% 6px, 39% 0, 42% 6px, 45% 0, 48% 6px, 51% 0, 54% 6px,
+    57% 0, 60% 6px, 63% 0, 66% 6px, 69% 0, 72% 6px, 75% 0, 78% 6px, 81% 0,
+    84% 6px, 87% 0, 90% 6px, 93% 0, 96% 6px, 100% 0,
+    100% calc(100% - 6px), 96% 100%, 93% calc(100% - 6px), 90% 100%,
+    87% calc(100% - 6px), 84% 100%, 81% calc(100% - 6px), 78% 100%,
+    75% calc(100% - 6px), 72% 100%, 69% calc(100% - 6px), 66% 100%,
+    63% calc(100% - 6px), 60% 100%, 57% calc(100% - 6px), 54% 100%,
+    51% calc(100% - 6px), 48% 100%, 45% calc(100% - 6px), 42% 100%,
+    39% calc(100% - 6px), 36% 100%, 33% calc(100% - 6px), 30% 100%,
+    27% calc(100% - 6px), 24% 100%, 21% calc(100% - 6px), 18% 100%,
+    15% calc(100% - 6px), 12% 100%, 9% calc(100% - 6px), 6% 100%,
+    3% calc(100% - 6px), 0 100%
+  );
+}
+.ticket-header {
+  text-align: center;
+  border-bottom: 1px dashed var(--line);
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+.ticket-rayon {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  color: var(--basil-deep);
+  margin: 12px 0 4px;
+}
+.ticket-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+}
+.ticket-line .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ticket-line .qty { white-space: nowrap; font-weight: 500; }
+.ticket-line .dots { flex: 0 1 40px; border-bottom: 1px dotted var(--line); transform: translateY(-3px); }
+.ticket-line.matched .name::before { content: "✓ "; color: var(--ok); }
+.ticket-line.unmatched { cursor: pointer; }
+.ticket-line.unmatched .name::before { content: "? "; color: var(--paprika); font-weight: 600; }
+.ticket-line.unmatched:hover .name { text-decoration: underline; }
+.ticket-line.stock { color: var(--ink-soft); text-decoration: line-through; }
+.ticket-total {
+  border-top: 1px dashed var(--line);
+  margin-top: 10px;
+  padding-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  font-weight: 600;
+}
+.ticket-foot { text-align: center; font-size: 0.7rem; color: var(--ink-soft); margin-top: 10px; }
+
+/* ---------- inventaire ---------- */
+.inv-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.9rem;
+}
+.inv-line:last-child { border-bottom: none; }
+.inv-line .name { flex: 1; }
+.inv-line .qty { font-family: var(--font-mono); font-size: 0.82rem; color: var(--ink-soft); white-space: nowrap; }
+.inv-line .dlc { font-family: var(--font-mono); font-size: 0.75rem; white-space: nowrap; }
+.inv-line .dlc.soon { color: var(--paprika); font-weight: 600; }
+.inv-line .del { background: none; border: none; color: var(--ink-soft); cursor: pointer; font-size: 1rem; }
+.inv-line .del:hover { color: var(--paprika); }
+
+/* ---------- dialogs & toast ---------- */
+.dialog { border: none; border-radius: var(--radius); padding: 0; max-width: 420px; width: calc(100% - 32px); }
+.dialog::backdrop { background: rgba(28, 35, 33, 0.45); }
+.dialog-body { padding: 20px; }
+.dialog-body h2 { font-family: var(--font-display); font-size: 1.05rem; margin: 0 0 14px; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
+
+.match-option {
+  display: block; width: 100%;
+  text-align: left;
+  padding: 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: 0.88rem;
+}
+.match-option:hover { border-color: var(--basil); }
+
+.toast {
+  position: fixed;
+  bottom: calc(76px + env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%) translateY(10px);
+  background: var(--ink);
+  color: #fff;
+  padding: 10px 18px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s, transform 0.25s;
+  z-index: 50;
+  max-width: 90%;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.toast.error { background: var(--paprika); }
+
+.badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--ink-soft);
+}
+.badge.ok { color: var(--ok); border-color: var(--ok); }
+.badge.warn { color: var(--warn); border-color: var(--warn); }
+
+/* ---------- convives & présence (v1.1) ---------- */
+.conv-line { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+.conv-line .conv-nom { flex: 2; margin-top: 0; }
+.conv-line .conv-coef { flex: 1; margin-top: 0; }
+.conv-line .del { background: none; border: none; color: var(--ink-soft); cursor: pointer; font-size: 1rem; }
+.conv-line .del:hover { color: var(--paprika); }
+
+.pres-block { margin-bottom: 16px; }
+.pres-name { font-family: var(--font-display); font-weight: 700; font-size: 0.85rem; margin-bottom: 6px; }
+.pres-grid {
+  display: grid;
+  grid-template-columns: 44px repeat(7, 1fr);
+  gap: 4px;
+  align-items: center;
+}
+.pres-h {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--ink-soft);
+  text-align: center;
+}
+.pres-grid > .pres-h:nth-child(n+9):nth-child(8n+1) { text-align: left; }
+.pres-cell {
+  aspect-ratio: 1.4;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+  padding: 0;
+}
+.pres-cell.on { background: var(--basil); border-color: var(--basil-deep); }
+.pres-cell:focus-visible { outline: 2px solid var(--basil); outline-offset: 1px; }
+
+/* ---------- recommandation livraison (v1.2) ---------- */
+.card.delivery { border-left: 4px solid var(--basil); font-size: 0.88rem; }
+.card.delivery.warn { border-left-color: var(--paprika); }
+
+/* ---------- créneaux de livraison (v1.3) ---------- */
+.deliv-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 0; border-bottom: 1px dashed var(--line);
+  font-family: var(--font-mono); font-size: 0.82rem;
+}
+.deliv-row:last-of-type { border-bottom: none; }
+.deliv-rang {
+  width: 20px; height: 20px; flex: 0 0 auto;
+  border-radius: 50%; background: var(--basil); color: #fff;
+  display: grid; place-items: center; font-size: 0.7rem; font-weight: 600;
+}
+.deliv-label { flex: 1; font-family: var(--font-body); font-weight: 600; }
+.deliv-date { color: var(--ink-soft); }
+.card.delivery.warn .deliv-rang { background: var(--paprika); }
+
+.slot-line {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 0.9rem;
+}
+.slot-line:last-child { border-bottom: none; }
+.slot-line .del { background: none; border: none; color: var(--ink-soft); cursor: pointer; font-size: 1rem; }
+.slot-line .del:hover { color: var(--paprika); }
+
+/* ---------- chips (complexité / cuisines / bannis) v1.4 ---------- */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 8px; }
+.chip {
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.chip:hover { border-color: var(--basil); color: var(--basil-deep); }
+.chip.on { background: var(--basil); border-color: var(--basil-deep); color: #fff; }
+.chip.banned { border-color: var(--paprika); color: var(--paprika); }
+.chip.banned:hover { background: var(--paprika); color: #fff; }
+.chip:focus-visible { outline: 2px solid var(--basil); outline-offset: 1px; }

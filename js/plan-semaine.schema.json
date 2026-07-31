@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://panier-repas.app/schemas/plan-semaine.schema.json",
+  "title": "PlanSemaine",
+  "description": "Format pivot généré par l'API LLM : plan de repas hebdomadaire avec ingrédients normalisés, prêt pour l'agrégation panier puis le matching Leclerc.",
+  "type": "object",
+  "required": ["version", "semaine", "profil", "recettes"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Version du schéma, pour migrations futures."
+    },
+    "semaine": {
+      "type": "object",
+      "required": ["date_debut", "nb_jours"],
+      "additionalProperties": false,
+      "properties": {
+        "date_debut": { "type": "string", "format": "date", "description": "Lundi de la semaine, ISO 8601 (YYYY-MM-DD)." },
+        "nb_jours": { "type": "integer", "minimum": 1, "maximum": 7 }
+      }
+    },
+    "profil": {
+      "type": "object",
+      "required": ["objectif", "nb_personnes", "repas_par_jour"],
+      "additionalProperties": false,
+      "properties": {
+        "objectif": {
+          "type": "string",
+          "enum": ["prise_de_muscle", "maintien", "perte_de_poids", "equilibre"],
+          "description": "Pilote la répartition des macros et le choix des recettes."
+        },
+        "nb_personnes": { "type": "integer", "minimum": 1 },
+        "repas_par_jour": { "type": "integer", "minimum": 1, "maximum": 6 },
+        "kcal_cible_jour": { "type": "integer", "minimum": 1200, "maximum": 6000 },
+        "proteines_cible_jour_g": { "type": "integer", "minimum": 0 },
+        "budget_hebdo_eur": { "type": "number", "minimum": 0 },
+        "exclusions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Ingrédients ou familles à exclure (allergies, dégoûts). Noms canoniques."
+        }
+      }
+    },
+    "recettes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/recette" }
+    },
+    "planning": {
+      "type": "array",
+      "description": "Affectation des recettes aux jours/repas. Optionnel : utile pour l'UI calendrier et la priorisation DLC.",
+      "items": {
+        "type": "object",
+        "required": ["jour", "repas", "recette_id"],
+        "additionalProperties": false,
+        "properties": {
+          "jour": { "type": "integer", "minimum": 1, "maximum": 7, "description": "1 = lundi." },
+          "repas": { "type": "string", "enum": ["petit_dejeuner", "dejeuner", "collation", "diner"] },
+          "recette_id": { "type": "string" },
+          "portions": { "type": "integer", "minimum": 1, "description": "Portions consommées à ce repas (batch cooking : peut être < portions totales de la recette)." }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "recette": {
+      "type": "object",
+      "required": ["id", "nom", "portions", "macros_par_portion", "ingredients", "etapes"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^r-[a-z0-9-]+$", "description": "Slug unique, ex. r-poulet-riz-brocoli." },
+        "nom": { "type": "string" },
+        "portions": { "type": "integer", "minimum": 1, "description": "Nombre total de portions produites (batch cooking friendly)." },
+        "temps_preparation_min": { "type": "integer", "minimum": 0 },
+        "temps_cuisson_min": { "type": "integer", "minimum": 0 },
+        "macros_par_portion": {
+          "type": "object",
+          "required": ["kcal", "proteines_g", "glucides_g", "lipides_g"],
+          "additionalProperties": false,
+          "properties": {
+            "kcal": { "type": "integer", "minimum": 0 },
+            "proteines_g": { "type": "number", "minimum": 0 },
+            "glucides_g": { "type": "number", "minimum": 0 },
+            "lipides_g": { "type": "number", "minimum": 0 }
+          }
+        },
+        "ingredients": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/ingredient" }
+        },
+        "etapes": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        },
+        "conservation_jours": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Durée de conservation du plat cuisiné au frigo — sert à ordonner le planning."
+        }
+      }
+    },
+    "ingredient": {
+      "type": "object",
+      "required": ["nom_canonique", "quantite", "unite", "rayon"],
+      "additionalProperties": false,
+      "properties": {
+        "nom_canonique": {
+          "type": "string",
+          "description": "Nom normalisé, singulier, minuscules, sans marque : 'filet de poulet', 'flocons d'avoine', 'skyr nature'. C'est LA clé du matching : le dictionnaire ingrédient→référence Leclerc s'indexe dessus."
+        },
+        "quantite": { "type": "number", "exclusiveMinimum": 0 },
+        "unite": {
+          "type": "string",
+          "enum": ["g", "ml", "piece"],
+          "description": "Uniquement ces 3 unités. Le LLM convertit tout (1 c.à.s d'huile → 15 ml). Les conversions vers les unités d'achat (barquette, brique...) sont faites par l'agrégateur, pas ici."
+        },
+        "rayon": {
+          "type": "string",
+          "enum": [
+            "fruits_legumes", "boucherie", "poissonnerie", "cremerie_oeufs",
+            "epicerie_salee", "epicerie_sucree", "surgeles", "boulangerie",
+            "boissons", "condiments_epices"
+          ],
+          "description": "Catégorie rayon pour grouper la liste de courses et guider la recherche catalogue."
+        },
+        "peremption_type": {
+          "type": "string",
+          "enum": ["tres_courte", "courte", "moyenne", "longue"],
+          "description": "tres_courte ≤ 3 j (viande fraîche, poisson), courte ≤ 7 j (légumes feuilles, produits laitiers ouverts), moyenne ≤ 1 mois (œufs, légumes racines), longue > 1 mois (sec, conserves, surgelés). Pilote la priorisation DLC de l'agrégateur."
+        },
+        "optionnel": { "type": "boolean", "default": false },
+        "fond_de_placard": {
+          "type": "boolean",
+          "default": false,
+          "description": "true pour sel, poivre, huile, épices : présumé en stock, exclu du panier sauf si l'inventaire dit le contraire."
+        }
+      }
+    }
+  }
+}

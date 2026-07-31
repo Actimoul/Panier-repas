@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    body { font-family: system-ui, sans-serif; width: 300px; padding: 12px; color: #1C2321; }
+    h1 { font-size: 14px; margin: 0 0 8px; }
+    p { font-size: 12px; margin: 0 0 8px; }
+    textarea { width: 100%; height: 110px; box-sizing: border-box; font-family: monospace; font-size: 11px; }
+    select { width: 100%; margin-top: 6px; padding: 6px; font-size: 12px; }
+    label { font-size: 12px; font-weight: 600; display: block; margin-top: 8px; }
+    button { width: 100%; margin-top: 8px; background: #2F6B3C; color: #fff; border: none; border-radius: 8px; padding: 10px; cursor: pointer; font-weight: 600; }
+    button:hover { background: #1F4A29; }
+    .status { font-size: 12px; margin-top: 8px; color: #4B5450; }
+    .err { color: #D2481F; }
+    .slot { font-size: 12px; background: #F4F3EE; border-left: 3px solid #2F6B3C; padding: 6px 8px; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Panier Repas → Leclerc</h1>
+  <p>Colle la liste copiée depuis l'app, choisis la livraison, puis ouvre le site Leclerc.</p>
+  <textarea id="list" placeholder='{"source":"panier-repas", ...}'></textarea>
+  <label for="deliv">Livraison à préparer</label>
+  <select id="deliv"><option value="1">Livraison 1</option></select>
+  <div id="slot-info" class="slot" hidden></div>
+  <button id="load">Charger la liste</button>
+  <div class="status" id="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>
