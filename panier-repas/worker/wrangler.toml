@@ -1,7 +1,0 @@
-name = "panier-poids"
-main = "worker.js"
-compatibility_date = "2026-07-01"
-
-[[kv_namespaces]]
-binding = "WEIGHTS"
-id = "REMPLACER_PAR_L_ID_KV"
