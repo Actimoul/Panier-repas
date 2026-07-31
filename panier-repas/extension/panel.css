@@ -1,0 +1,42 @@
+#pr-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 999999;
+  width: 280px;
+  background: #fff;
+  border: 2px solid #2F6B3C;
+  border-radius: 12px;
+  padding: 12px;
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  color: #1C2321;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.18);
+}
+#pr-panel .pr-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+#pr-panel .pr-head span { margin-left: auto; font-family: monospace; }
+#pr-panel .pr-head button { border: none; background: none; cursor: pointer; font-size: 14px; }
+#pr-panel .pr-current { margin: 6px 0; }
+#pr-panel .pr-name { font-weight: 600; }
+#pr-panel .pr-qty { font-family: monospace; color: #4B5450; }
+#pr-panel .pr-actions { display: flex; gap: 6px; margin: 8px 0; flex-wrap: wrap; }
+#pr-panel .pr-actions button {
+  flex: 1; min-width: 70px;
+  background: #2F6B3C; color: #fff;
+  border: none; border-radius: 8px;
+  padding: 8px 6px; cursor: pointer; font-size: 12px;
+}
+#pr-panel .pr-actions button:hover { background: #1F4A29; }
+#pr-panel .pr-actions #pr-skip { background: #fff; color: #1C2321; border: 1px solid #D9D6CC; }
+#pr-panel .pr-log { font-size: 11px; color: #2F6B3C; padding: 1px 0; }
+#pr-panel .pr-log.pr-err { color: #D2481F; }
+#pr-panel .pr-done { padding: 8px 0; }
+#pr-panel .pr-reset {
+  width: 100%; margin-top: 8px;
+  background: none; border: 1px solid #D9D6CC; border-radius: 8px;
+  padding: 6px; cursor: pointer; font-size: 11px; color: #4B5450;
+}
+#pr-panel .pr-slot {
+  font-size: 11px; background: #F4F3EE; border-left: 3px solid #2F6B3C;
+  padding: 5px 7px; margin-bottom: 8px; color: #1F4A29;
+}
