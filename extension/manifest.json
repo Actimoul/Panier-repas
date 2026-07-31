@@ -1,12 +1,16 @@
 {
   "manifest_version": 3,
   "name": "Panier Repas → Leclerc",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Remplit ton panier Leclerc Drive à partir de la liste générée par Panier Repas. S'arrête toujours avant le paiement.",
-  "permissions": ["storage", "activeTab"],
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
   "host_permissions": [
     "https://*.leclercdrive.fr/*",
-    "https://*.e-leclerc.com/*"
+    "https://*.e-leclerc.com/*",
+    "https://world.openfoodfacts.org/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -14,11 +18,22 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://*.leclercdrive.fr/*", "https://*.e-leclerc.com/*"],
-      "js": ["adapter.js", "content.js"],
-      "css": ["panel.css"],
+      "matches": [
+        "https://*.leclercdrive.fr/*",
+        "https://*.e-leclerc.com/*"
+      ],
+      "js": [
+        "scoring.js",
+        "adapter.js",
+        "content.js"
+      ],
+      "css": [
+        "panel.css"
+      ],
       "run_at": "document_idle"
     }
   ],
-  "icons": { "128": "icon-128.png" }
+  "icons": {
+    "128": "icon-128.png"
+  }
 }

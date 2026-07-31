@@ -154,3 +154,96 @@ Trois garde-fous cumulés, dans `js/catalogue.js` :
 magasin ». L'ingrédient est alors banni des générations suivantes (liste gérable et
 réversible depuis le Profil). C'est le mécanisme qui fait converger l'app vers le
 catalogue réel de TON magasin.
+
+## v1.5 — Cibles caloriques calculées automatiquement
+
+Nouvelle section **Ton corps** dans le Profil : poids, taille, âge, sexe, niveau
+d'activité (5 niveaux, facteurs 1.2 à 1.9).
+
+L'app calcule alors les cibles avec **Mifflin-St Jeor** :
+`MB = 10×poids + 6.25×taille − 5×âge + 5` (homme) ou `− 161` (femme),
+puis `maintien = MB × facteur d'activité`, puis l'ajustement d'objectif :
+
+| Objectif | Calories | Protéines |
+|---|---|---|
+| Prise de muscle | maintien **+12 %** | 2.0 g/kg |
+| Maintien | maintien | 1.6 g/kg |
+| Perte de poids | maintien **−18 %** | 2.2 g/kg |
+| Équilibre | maintien | 1.4 g/kg |
+
+Le résultat s'affiche en direct (avec métabolisme de base et maintien en détail)
+et se recalcule à chaque modification. La case « Calculer mes cibles
+automatiquement » se décoche pour reprendre la main et saisir des valeurs
+manuelles.
+
+**Combiné au bloc C** : si le Worker poids est branché, la dernière pesée
+remplace le poids saisi avant chaque génération, les cibles se recalculent
+dessus, puis l'ajustement de tendance (±100-150 kcal) s'applique par-dessus.
+Autrement dit, la chaîne complète est : balance → Apple Santé → Worker →
+cibles recalculées → plan de la semaine.
+
+## v1.6 — Foyer complet, sport, restrictions
+
+### Correctif majeur
+`max_tokens` passé de 8000 à 16000 : une semaine complète (6 recettes + 28 créneaux)
+dépassait le plafond, la réponse était tronquée, le JSON échouait et l'app relançait
+en silence — d'où l'impression de boucle infinie. Ajoutés aussi : timeout dur de
+3 minutes par appel, détection explicite de la troncature (`stop_reason`), et un
+statut numéroté (1/3, 2/3, 3/3) pour voir où en est la génération.
+
+### Fiches personnes
+Chaque membre du foyer a désormais sa fiche : âge, sexe, poids, taille, niveau
+d'activité, objectif propre (ou celui du foyer). L'app calcule ses besoins réels et
+en dérive automatiquement son coefficient de portion — plus besoin de le deviner.
+
+Sous 18 ans, Mifflin-St Jeor n'est pas fiable : l'app bascule sur les apports moyens
+de référence par tranche d'âge (ANSES/PNNS), modulés par le niveau d'activité.
+
+### Sport
+Par personne : nombre de séances hebdo, intensité (légère 250 / modérée 400 /
+intense 600 kcal), et les jours d'entraînement. Les calories du sport s'ajoutent aux
+besoins, et les jours cochés reçoivent plus de glucides (+15-20 %) avec les repas les
+plus riches en protéines placés autour de la séance.
+
+### Restrictions
+Deux niveaux par personne, traités différemment :
+- **Interdits** (allergie, régime) : jamais, sous aucune forme, même en trace ou en
+  substitut proche.
+- **N'aime pas** : évités, mais un usage discret et bien intégré reste toléré.
+
+## v1.7 — Sélection automatique du meilleur rapport qualité/prix
+
+### Le principe
+L'extension ne prend plus « le premier résultat » : pour chaque article, elle
+récolte jusqu'à 8 candidats sur la page de résultats, les note, et retient le
+meilleur — avec sa justification.
+
+### Deux axes de notation (`js/scoring.js`, partagé app ↔ extension)
+- **Prix** : ramené au prix au kg / au litre / à l'unité, la seule comparaison
+  honnête entre des conditionnements différents. Le libellé est analysé pour en
+  extraire la contenance (« 2x300g », « 1,5 L », « x12 »).
+- **Santé** : via **Open Food Facts** (libre, sans clé), interrogé par code-barres.
+  Nutri-Score (poids 3), groupe NOVA de transformation (3), nombre d'additifs (2),
+  longueur de la liste d'ingrédients (1), bonus bio. Pour les produits sans
+  code-barres (viande, légumes au poids), repli sur des heuristiques de libellé :
+  un produit brut est bien noté, un produit pané ou en sauce est pénalisé.
+
+### Réglage
+Dans ⚙ Réglages, un curseur **prix ↔ santé** en 5 crans, du « moins cher avant
+tout » à « la meilleure composition avant tout ». Plus un plafond optionnel par
+article : au-delà, le produit reste proposé mais lourdement pénalisé (il peut
+être le seul disponible).
+
+### Garder la main
+- Bouton **« Choisir… »** dans le panneau : la liste des 5 meilleurs s'affiche
+  avec note, prix au kg et détails nutritionnels — tu tranches.
+- Le curseur prix/santé est aussi accessible directement dans le panneau, et
+  se change en cours de route.
+- Dans l'app, chaque association reste modifiable à la main comme avant, et le
+  dialogue affiche désormais pourquoi le produit a été retenu.
+
+### Boucle d'apprentissage
+En fin de liste, **« Copier les choix pour l'app »** → dans le Panier,
+**« Importer les choix »**. Les produits retenus deviennent des associations
+permanentes (libellé, contenance déduite, prix, EAN, note, justification), donc
+les semaines suivantes n'ont plus à re-chercher.

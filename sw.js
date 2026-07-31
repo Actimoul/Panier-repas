@@ -1,10 +1,11 @@
 /* Cache-first for the app shell, network-only for the Anthropic API. */
-const CACHE = 'panier-repas-v6';
+const CACHE = 'panier-repas-v9';
 const SHELL = [
   './',
   './index.html',
   './css/styles.css',
   './js/store.js',
+  './js/scoring.js',
   './js/catalogue.js',
   './js/schema.js',
   './js/generator.js',

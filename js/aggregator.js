@@ -112,13 +112,15 @@ const Aggregator = (() => {
 
   /* Payload consumed by the Chrome extension. When a 2nd delivery is
      recommended, at-risk items are tagged livraison 2. */
-  function buildExport(items, plan, delivery) {
+  function buildExport(items, plan, delivery, options) {
     const riskNames = new Set((delivery?.risks || []).map(r => r.nom_canonique));
     return {
       source: 'panier-repas',
       version: 2,
       genere_le: new Date().toISOString(),
       semaine: plan.semaine.date_debut,
+      pref_sante: options?.prefSante ?? 0.5,
+      budget_max_article: options?.budgetMaxArticle || null,
       livraisons: (delivery?.livraisons || []).map(d => ({
         rang: d.rang, date: d.date, heure: d.heure, label: d.label
       })),

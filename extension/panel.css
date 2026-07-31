@@ -40,3 +40,21 @@
   font-size: 11px; background: #F4F3EE; border-left: 3px solid #2F6B3C;
   padding: 5px 7px; margin-bottom: 8px; color: #1F4A29;
 }
+#pr-panel { width: 320px; max-height: 80vh; overflow-y: auto; }
+#pr-panel .pr-pref { font-size: 11px; margin: 8px 0 4px; color: #4B5450; }
+#pr-panel .pr-pref input[type=range] { width: 100%; accent-color: #2F6B3C; margin-top: 3px; }
+#pr-panel .pr-status { font-size: 11px; color: #1F4A29; margin: 6px 0; min-height: 13px; }
+#pr-panel .pr-cand {
+  display: block; width: 100%; text-align: left;
+  border: 1px solid #D9D6CC; border-radius: 7px; background: #fff;
+  padding: 6px 8px; margin-bottom: 5px; cursor: pointer;
+}
+#pr-panel .pr-cand:hover { border-color: #2F6B3C; }
+#pr-panel .pr-cand.best { border-color: #2F6B3C; background: #F4F3EE; }
+#pr-panel .pr-cand-top { font-size: 11.5px; font-weight: 600; color: #1C2321; }
+#pr-panel .pr-cand-sub { font-size: 10.5px; color: #4B5450; margin-top: 2px; }
+#pr-panel .pr-wide {
+  display: block; width: 100%; margin-top: 8px;
+  background: #2F6B3C; color: #fff; border: none; border-radius: 8px;
+  padding: 8px; cursor: pointer; font-size: 12px; font-weight: 600;
+}

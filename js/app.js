@@ -142,13 +142,33 @@
         }
       }
 
-      // 2. kcal auto-adjust from the trend
-      const adj = Health.adjustKcal(profile, weights);
-      const profileAdjusted = { ...profile, kcal_cible_jour: adj.kcal };
-      if (adj.delta !== 0) toast(`Kcal ajustées : ${profile.kcal_cible_jour} → ${adj.kcal} (${adj.reason})`);
+      // 2. targets: recompute from body metrics when auto mode is on,
+      //    using the latest synced weight if available
+      let profileForGen = profile;
+      if (profile.cibles_auto) {
+        const latest = weights.length ? weights[weights.length - 1].kg : null;
+        const metrics = { ...profile.metrics, poids_kg: latest || profile.metrics.poids_kg };
+        const t = Health.computeTargets(metrics, profile.objectif);
+        if (t) {
+          profileForGen = { ...profile, kcal_cible_jour: t.kcal, proteines_cible_jour_g: t.proteines_g };
+          if (latest && latest !== profile.metrics.poids_kg) {
+            Store.setProfile({ ...profile, metrics, kcal_cible_jour: t.kcal, proteines_cible_jour_g: t.proteines_g });
+          }
+        }
+      }
 
-      // 3. couverts per meal slot from the presence grid
-      const coefById = Object.fromEntries(profile.convives.map(c => [c.id, c.coefficient]));
+      // 3. kcal fine-tuning from the weight trend
+      const adj = Health.adjustKcal(profileForGen, weights);
+      const profileAdjusted = { ...profileForGen, kcal_cible_jour: adj.kcal };
+      if (adj.delta !== 0) toast(`Kcal ajustées : ${profileForGen.kcal_cible_jour} → ${adj.kcal} (${adj.reason})`);
+
+      // 4. couverts per meal slot, weighted by each person's real needs
+      const ref = profile.convives[0];
+      const coefById = {};
+      for (const c of profile.convives) {
+        coefById[c.id] = c.coefficient
+          ?? (c.id === ref.id ? 1 : (Health.coefficientDerive(c, ref, profile.objectif) ?? 1));
+      }
       const couverts = {};
       for (let jour = 1; jour <= 7; jour++) {
         couverts[jour] = {};
@@ -159,11 +179,27 @@
         }
       }
 
+      // 5. training days: extra carbs/protein on those days
+      const joursSport = {};
+      for (const c of profile.convives) {
+        for (const j of c.sport?.jours || []) {
+          joursSport[j] = joursSport[j] || [];
+          joursSport[j].push(c.nom);
+        }
+      }
+
+      // 6. restrictions, split by severity
+      const interdits = [...new Set(profile.convives.flatMap(c => c.exclusions || []))];
+      const detestes = [...new Set(profile.convives.flatMap(c => c.deteste || []))];
+
       const plan = await Generator.generate({
         profile: profileAdjusted,
         inventory: Store.getInventory(),
         dateDebut: nextMonday(),
         couverts,
+        joursSport,
+        interdits,
+        detestes,
         noteAjustement: adj.reason,
         onStatus: (msg) => { const el = statusEl(); if (el) el.textContent = msg; }
       });
@@ -248,8 +284,9 @@
       <p class="hint">Touche une ligne "?" pour l'associer à un produit Leclerc. L'association est mémorisée pour toutes les semaines suivantes.</p>
       <div class="btn-row">
         <button class="btn ghost" id="btn-copy-export">Copier pour l'extension</button>
-        <button class="btn primary" id="btn-ordered">Commande passée ✓</button>
-      </div>`;
+        <button class="btn ghost" id="btn-import">Importer les choix</button>
+      </div>
+      <button class="btn primary block" id="btn-ordered">Commande passée ✓</button>`;
 
     view.querySelectorAll('.ticket-line.unmatched, .ticket-line.matched').forEach(el => {
       const open = () => openMatchDialog(el.dataset.name);
@@ -260,7 +297,10 @@
     document.getElementById('btn-slots')?.addEventListener('click', openSlotsDialog);
 
     document.getElementById('btn-copy-export').addEventListener('click', async () => {
-      const payload = Aggregator.buildExport(items, plan, delivery);
+      const st = Store.getSettings();
+      const payload = Aggregator.buildExport(items, plan, delivery, {
+        prefSante: st.prefSante, budgetMaxArticle: st.budgetMaxArticle
+      });
       try {
         await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
         toast('Liste copiée — colle-la dans l\'extension');
@@ -269,6 +309,8 @@
         toast('Copie impossible : ' + err.message, true);
       }
     });
+
+    document.getElementById('btn-import')?.addEventListener('click', () => openImportDialog());
 
     document.getElementById('btn-ordered').addEventListener('click', () => {
       if (!confirm('Marquer la commande comme passée ? Les quantités achetées seront ajoutées à ton inventaire avec des DLC estimées.')) return;
@@ -282,6 +324,58 @@
         toast('Échec mise à jour inventaire : ' + err.message, true);
       }
     });
+  }
+
+  /* Import the products the extension actually picked, so the app's
+     product dictionary learns from them. */
+  function openImportDialog() {
+    const dlg = document.getElementById('dlg-match');
+    const body = document.getElementById('dlg-match-body');
+    body.innerHTML = `
+      <h2>Importer les choix</h2>
+      <p class="hint">Colle ici ce que l'extension a copié après avoir rempli le panier. Les produits retenus seront mémorisés comme associations.</p>
+      <textarea id="imp-text" rows="6" placeholder='{"source":"panier-repas-choix", ...}'></textarea>
+      <div class="dialog-actions">
+        <button class="btn ghost" id="imp-cancel">Annuler</button>
+        <button class="btn primary" id="imp-ok">Importer</button>
+      </div>`;
+    body.querySelector('#imp-cancel').addEventListener('click', () => dlg.close());
+    body.querySelector('#imp-ok').addEventListener('click', () => {
+      let payload;
+      try {
+        payload = JSON.parse(body.querySelector('#imp-text').value);
+      } catch {
+        toast('JSON illisible', true);
+        return;
+      }
+      if (payload.source !== 'panier-repas-choix' || !Array.isArray(payload.choix)) {
+        toast('Format inattendu — copie depuis l\'extension', true);
+        return;
+      }
+      const matches = Store.getMatches();
+      let n = 0;
+      for (const c of payload.choix) {
+        if (!c.nom_canonique || !c.libelle) continue;
+        const existing = matches[c.nom_canonique] || {};
+        const size = Scoring.packSize({ libelle: c.libelle });
+        matches[c.nom_canonique] = {
+          ...existing,
+          libelle: c.libelle,
+          pack_quantite: size?.quantite || existing.pack_quantite || 1,
+          pack_unite: size?.unite || existing.pack_unite || 'piece',
+          prix_eur: typeof c.prix_eur === 'number' ? c.prix_eur : existing.prix_eur,
+          ref: c.ean || existing.ref,
+          score: c.score,
+          justification: c.justification
+        };
+        n++;
+      }
+      Store.setMatches(matches);
+      dlg.close();
+      renderPanier();
+      toast(`${n} produit(s) importé(s) ✓`);
+    });
+    dlg.showModal();
   }
 
   function openSlotsDialog() {
@@ -350,6 +444,7 @@
     body.innerHTML = `
       <h2>Associer « ${esc(name)} »</h2>
       ${current ? `<p class="hint">Actuellement : ${esc(current.libelle)} (${current.pack_quantite} ${esc(current.pack_unite)}${typeof current.prix_eur === 'number' ? ', ' + current.prix_eur.toFixed(2) + '€' : ''})</p>` : ''}
+      ${current?.justification ? `<div class="calc-box"><div class="calc-main">Choisi automatiquement${current.score ? ` — ${current.score}/100` : ''}</div><div class="calc-detail">${esc(current.justification)}</div></div>` : ''}
       <a class="match-option" href="${LECLERC_SEARCH(name)}" target="_blank" rel="noopener">🔎 Chercher « ${esc(name)} » sur Leclerc Drive</a>
       <p class="hint">Trouve le produit sur le site, puis renseigne-le ici :</p>
       <label>Libellé produit <input id="m-libelle" value="${current ? esc(current.libelle) : ''}" placeholder="Filet de poulet x2 Marque Repère" /></label>
@@ -475,14 +570,92 @@
     });
   }
 
+
   /* ---------- tab: Profil ---------- */
+  const DAYS_SHORT = ['L', 'M', 'M', 'J', 'V', 'S', 'D'];
+  const REPAS_SHORT = { petit_dejeuner: 'Déj', dejeuner: 'Midi', collation: 'Coll', diner: 'Soir' };
+
   function renderProfil() {
     const p = Store.getProfile();
     const banned = Store.getUnavailable();
-    view.innerHTML = `
-      <div class="section-title">Objectif</div>
-      <div class="card">
+
+    /* Each convive is a full person: metrics, sport, restrictions. */
+    function personCard(c, i) {
+      const isMain = i === 0;
+      const sport = c.sport || {};
+      return `
+      <div class="person" data-idx="${i}">
+        <div class="person-head">
+          <input class="c-nom" value="${esc(c.nom || '')}" placeholder="Prénom" aria-label="Prénom" />
+          ${isMain ? '<span class="badge">toi</span>' : '<button class="del c-del" title="Retirer" aria-label="Retirer ce convive">✕</button>'}
+        </div>
+
+        <div class="grid-2">
+          <label>Âge <input class="c-age" type="number" min="1" max="110" value="${c.age ?? ''}" placeholder="35" /></label>
+          <label>Sexe
+            <select class="c-sexe">
+              <option value="homme"${c.sexe !== 'femme' ? ' selected' : ''}>Homme</option>
+              <option value="femme"${c.sexe === 'femme' ? ' selected' : ''}>Femme</option>
+            </select>
+          </label>
+        </div>
+        <div class="grid-2">
+          <label>Poids (kg) <input class="c-poids" type="number" step="0.1" value="${c.poids_kg ?? ''}" placeholder="78" /></label>
+          <label>Taille (cm) <input class="c-taille" type="number" value="${c.taille_cm ?? ''}" placeholder="178" /></label>
+        </div>
+        <label>Niveau d'activité (hors sport)
+          <select class="c-activite">
+            ${Object.entries(Health.ACTIVITES).map(([k, v]) =>
+              `<option value="${k}"${(c.activite || 'modere') === k ? ' selected' : ''}>${esc(v.label)}</option>`).join('')}
+          </select>
+        </label>
+        ${!isMain ? `
         <label>Objectif
+          <select class="c-objectif">
+            <option value=""${!c.objectif ? ' selected' : ''}>Comme le foyer</option>
+            <option value="prise_de_muscle"${c.objectif === 'prise_de_muscle' ? ' selected' : ''}>Prise de muscle</option>
+            <option value="maintien"${c.objectif === 'maintien' ? ' selected' : ''}>Maintien</option>
+            <option value="perte_de_poids"${c.objectif === 'perte_de_poids' ? ' selected' : ''}>Perte de poids</option>
+            <option value="equilibre"${c.objectif === 'equilibre' ? ' selected' : ''}>Équilibre</option>
+          </select>
+        </label>` : ''}
+
+        <div class="sub-title">Sport</div>
+        <div class="grid-2">
+          <label>Séances / semaine <input class="c-seances" type="number" min="0" max="14" value="${sport.seances_par_semaine ?? 0}" /></label>
+          <label>Intensité
+            <select class="c-intensite">
+              <option value="legere"${sport.intensite === 'legere' ? ' selected' : ''}>Légère</option>
+              <option value="moderee"${(sport.intensite || 'moderee') === 'moderee' ? ' selected' : ''}>Modérée</option>
+              <option value="intense"${sport.intensite === 'intense' ? ' selected' : ''}>Intense</option>
+            </select>
+          </label>
+        </div>
+        <label style="margin-bottom:4px">Jours d'entraînement</label>
+        <div class="days-row c-jours">
+          ${DAYS_SHORT.map((d, j) => {
+            const on = (sport.jours || []).includes(j + 1);
+            return `<button type="button" class="day-btn ${on ? 'on' : ''}" data-j="${j + 1}" aria-pressed="${on}" aria-label="Jour ${j + 1}">${d}</button>`;
+          }).join('')}
+        </div>
+        <p class="hint">Les jours cochés reçoivent plus de glucides et de protéines.</p>
+
+        <div class="sub-title">Ce qu'il ou elle ne mange pas</div>
+        <label>Interdits (allergie, régime)
+          <input class="c-excl" value="${esc((c.exclusions || []).join(', '))}" placeholder="arachide, crustacé" />
+        </label>
+        <label>N'aime pas
+          <input class="c-deteste" value="${esc((c.deteste || []).join(', '))}" placeholder="courgette, olive" />
+        </label>
+
+        <div class="calc-box c-besoin"></div>
+      </div>`;
+    }
+
+    view.innerHTML = `
+      <div class="section-title">Objectif du foyer</div>
+      <div class="card">
+        <label>Objectif par défaut
           <select id="p-objectif">
             <option value="prise_de_muscle">Prise de muscle</option>
             <option value="maintien">Maintien</option>
@@ -490,7 +663,11 @@
             <option value="equilibre">Équilibre</option>
           </select>
         </label>
-        <div class="grid-2">
+        <label class="switch">
+          <input type="checkbox" id="p-auto" ${p.cibles_auto ? 'checked' : ''} />
+          <span>Calculer les cibles automatiquement</span>
+        </label>
+        <div class="grid-2" id="p-manual">
           <label>Kcal / jour <input id="p-kcal" type="number" value="${p.kcal_cible_jour}" /></label>
           <label>Protéines / jour (g) <input id="p-prot" type="number" value="${p.proteines_cible_jour_g}" /></label>
         </div>
@@ -499,6 +676,7 @@
           <label>Budget hebdo (€) <input id="p-budget" type="number" value="${p.budget_hebdo_eur}" /></label>
         </div>
       </div>
+
       <div class="section-title">Style de cuisine</div>
       <div class="card">
         <label>Complexité des recettes
@@ -516,39 +694,31 @@
         </div>
         <p class="hint">Aucun sélectionné = l'app varie librement.</p>
       </div>
-      <div class="section-title">Convives</div>
-      <div class="card" id="p-convives">
-        ${p.convives.map((c, i) => `
-          <div class="conv-line" data-idx="${i}">
-            <input class="conv-nom" value="${esc(c.nom)}" placeholder="Prénom" aria-label="Nom du convive" />
-            <input class="conv-coef" type="number" step="0.1" min="0.1" max="2" value="${c.coefficient}" aria-label="Coefficient de portion" />
-            ${i === 0 ? '<span class="hint" style="margin:0">toi</span>' : '<button class="del conv-del" title="Retirer">✕</button>'}
-          </div>`).join('')}
-        <p class="hint">Coefficient de portion : 1 = adulte, ~0.5-0.7 pour un enfant selon l'âge.</p>
-        <button class="btn ghost block" id="p-add-conv">+ Ajouter un convive</button>
-      </div>
+
+      <div class="section-title">Le foyer</div>
+      <div id="p-people">${p.convives.map(personCard).join('')}</div>
+      <button class="btn ghost block" id="p-add-conv" style="margin-bottom:12px">+ Ajouter une personne</button>
+
       <div class="section-title">Qui mange à la maison ?</div>
       <div class="card">
         <p class="hint">Touche une case pour basculer la présence. Un créneau sans personne = pas de repas prévu (cantine, resto…).</p>
         ${p.convives.map(c => `
           <div class="pres-block" data-cid="${esc(c.id)}">
-            <div class="pres-name">${esc(c.nom)}</div>
+            <div class="pres-name">${esc(c.nom || 'Convive')}</div>
             <div class="pres-grid">
-              <span></span>${['L','M','M','J','V','S','D'].map(d => `<span class="pres-h">${d}</span>`).join('')}
+              <span></span>${DAYS_SHORT.map(d => `<span class="pres-h">${d}</span>`).join('')}
               ${Store.REPAS_TYPES.map(rt => `
-                <span class="pres-h">${({petit_dejeuner:'Déj',dejeuner:'Midi',collation:'Coll',diner:'Soir'})[rt]}</span>
-                ${[1,2,3,4,5,6,7].map(j => {
+                <span class="pres-h">${REPAS_SHORT[rt]}</span>
+                ${[1, 2, 3, 4, 5, 6, 7].map(j => {
                   const on = (p.presence?.[j]?.[rt] || []).includes(c.id);
-                  return `<button class="pres-cell ${on ? 'on' : ''}" data-j="${j}" data-r="${rt}" aria-pressed="${on}" aria-label="${c.nom} jour ${j} ${rt}"></button>`;
+                  return `<button class="pres-cell ${on ? 'on' : ''}" data-j="${j}" data-r="${rt}" aria-pressed="${on}" aria-label="${esc(c.nom)} jour ${j} ${rt}"></button>`;
                 }).join('')}`).join('')}
             </div>
           </div>`).join('')}
       </div>
-      <div class="section-title">Préférences</div>
+
+      <div class="section-title">Préférences générales</div>
       <div class="card">
-        <label>Exclusions (séparées par des virgules)
-          <input id="p-excl" value="${esc((p.exclusions || []).join(', '))}" placeholder="fruits de mer, champignon" />
-        </label>
         <label>Préférences libres
           <textarea id="p-prefs" rows="3" placeholder="pas de poisson le lundi, j'aime les plats épicés…">${esc(p.preferences_libres || '')}</textarea>
         </label>
@@ -560,6 +730,7 @@
           <p class="hint">Touche pour réautoriser.</p>` : ''}
         <button class="btn primary block" id="p-save">Enregistrer le profil</button>
       </div>`;
+
     document.getElementById('p-objectif').value = p.objectif;
     const complexiteSel = document.getElementById('p-complexite');
     complexiteSel.value = p.complexite || 'simple';
@@ -570,25 +741,94 @@
     showComplexiteDesc();
     complexiteSel.addEventListener('change', showComplexiteDesc);
 
+    /* Read every person card back into objects. */
+    function readPeople() {
+      return [...view.querySelectorAll('.person')].map((el, i) => {
+        const base = p.convives[i] || Store.personneVide(`c${Date.now()}${i}`, 'Convive');
+        const val = (sel) => el.querySelector(sel)?.value ?? '';
+        const list = (sel) => val(sel).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+        return {
+          ...base,
+          nom: val('.c-nom').trim() || base.nom || 'Convive',
+          age: parseInt(val('.c-age'), 10) || null,
+          sexe: val('.c-sexe') || 'homme',
+          poids_kg: parseFloat(val('.c-poids')) || null,
+          taille_cm: parseFloat(val('.c-taille')) || null,
+          activite: val('.c-activite') || 'modere',
+          objectif: val('.c-objectif') || null,
+          sport: {
+            seances_par_semaine: parseInt(val('.c-seances'), 10) || 0,
+            intensite: val('.c-intensite') || 'moderee',
+            jours: [...el.querySelectorAll('.day-btn.on')].map(b => parseInt(b.dataset.j, 10))
+          },
+          exclusions: list('.c-excl'),
+          deteste: list('.c-deteste')
+        };
+      });
+    }
+
+    /* Live per-person needs + household targets. */
+    function refreshBesoins() {
+      const people = readPeople();
+      const objectifFoyer = document.getElementById('p-objectif').value;
+      const auto = document.getElementById('p-auto').checked;
+      document.getElementById('p-manual').style.display = auto ? 'none' : '';
+
+      const ref = people[0];
+      view.querySelectorAll('.person').forEach((el, i) => {
+        const box = el.querySelector('.c-besoin');
+        const b = Health.besoinsPersonne(people[i], objectifFoyer);
+        if (!b) {
+          box.innerHTML = `<div class="calc-detail">Renseigne l'âge${i === 0 || (people[i].age ?? 99) >= 18 ? ', le poids et la taille' : ''} pour estimer les besoins.</div>`;
+          return;
+        }
+        const coef = i === 0 ? 1 : (Health.coefficientDerive(people[i], ref, objectifFoyer) ?? 1);
+        const sportTxt = b.kcalSport ? ` · dont ${b.kcalSport} kcal de sport/jour` : '';
+        box.innerHTML = `
+          <div class="calc-main"><b>${b.kcal} kcal</b> · <b>${b.proteines_g} g</b> de protéines / jour</div>
+          <div class="calc-detail">${b.estEnfant ? 'estimation enfant' : `métabolisme ${b.bmr} kcal · maintien ${b.maintenance} kcal`}${sportTxt}${i > 0 ? ` · portion ×${coef}` : ''}</div>`;
+      });
+
+      if (auto && ref) {
+        const b = Health.besoinsPersonne(ref, objectifFoyer);
+        if (b) {
+          document.getElementById('p-kcal').value = b.kcal;
+          document.getElementById('p-prot').value = b.proteines_g;
+        }
+      }
+    }
+
+    /* Any input in a person card, or the household objective, recomputes. */
+    view.addEventListener('input', (e) => {
+      if (e.target.closest('.person') || ['p-objectif', 'p-auto'].includes(e.target.id)) refreshBesoins();
+    });
+    view.addEventListener('change', (e) => {
+      if (e.target.closest('.person') || ['p-objectif', 'p-auto'].includes(e.target.id)) refreshBesoins();
+    });
+
+    view.querySelectorAll('.day-btn').forEach(btn => btn.addEventListener('click', () => {
+      const on = btn.classList.toggle('on');
+      btn.setAttribute('aria-pressed', String(on));
+      refreshBesoins();
+    }));
+
     view.querySelectorAll('.chip[data-cuisine]').forEach(chip => chip.addEventListener('click', () => {
       const on = chip.classList.toggle('on');
       chip.setAttribute('aria-pressed', String(on));
     }));
 
     view.querySelectorAll('.chip[data-banned]').forEach(chip => chip.addEventListener('click', () => {
-      const next = Store.getUnavailable().filter(b => b !== chip.dataset.banned);
-      Store.setUnavailable(next);
+      Store.setUnavailable(Store.getUnavailable().filter(b => b !== chip.dataset.banned));
       Store.setProfile(readProfileForm(p));
       renderProfil();
       toast('Réautorisé ✓');
     }));
 
-    // presence toggles: mutate a working copy saved with the profile
     view.querySelectorAll('.pres-cell').forEach(cell => cell.addEventListener('click', () => {
       const cid = cell.closest('.pres-block').dataset.cid;
       const j = cell.dataset.j, r = cell.dataset.r;
-      if (!p.presence[j]) p.presence[j] = {};
-      if (!p.presence[j][r]) p.presence[j][r] = [];
+      p.presence[j] = p.presence[j] || {};
+      p.presence[j][r] = p.presence[j][r] || [];
       const list = p.presence[j][r];
       const pos = list.indexOf(cid);
       if (pos >= 0) list.splice(pos, 1); else list.push(cid);
@@ -597,37 +837,35 @@
     }));
 
     document.getElementById('p-add-conv').addEventListener('click', () => {
+      const saved = readProfileForm(p);
       const id = 'c' + Date.now().toString(36);
-      p.convives.push({ id, nom: '', coefficient: 0.6 });
-      for (let j = 1; j <= 7; j++) for (const rt of Store.REPAS_TYPES) {
-        p.presence[j] = p.presence[j] || {};
-        p.presence[j][rt] = p.presence[j][rt] || [];
+      saved.convives = [...saved.convives, Store.personneVide(id, '')];
+      for (let j = 1; j <= 7; j++) {
+        saved.presence[j] = saved.presence[j] || {};
+        for (const rt of Store.REPAS_TYPES) {
+          saved.presence[j][rt] = saved.presence[j][rt] || [];
+          if (!saved.presence[j][rt].includes(id)) saved.presence[j][rt].push(id);
+        }
       }
-      Store.setProfile(readProfileForm(p));
+      Store.setProfile(saved);
       renderProfil();
     });
 
-    view.querySelectorAll('.conv-del').forEach(btn => btn.addEventListener('click', () => {
-      const idx = parseInt(btn.closest('.conv-line').dataset.idx, 10);
-      const removed = p.convives.splice(idx, 1)[0];
+    view.querySelectorAll('.c-del').forEach(btn => btn.addEventListener('click', () => {
+      const idx = parseInt(btn.closest('.person').dataset.idx, 10);
+      const saved = readProfileForm(p);
+      const removed = saved.convives.splice(idx, 1)[0];
       for (let j = 1; j <= 7; j++) for (const rt of Store.REPAS_TYPES) {
-        const l = p.presence?.[j]?.[rt];
+        const l = saved.presence?.[j]?.[rt];
         if (l) { const k = l.indexOf(removed.id); if (k >= 0) l.splice(k, 1); }
       }
-      Store.setProfile(readProfileForm(p));
+      Store.setProfile(saved);
       renderProfil();
     }));
 
     function readProfileForm(base) {
-      const convLines = [...view.querySelectorAll('.conv-line')];
-      const convives = base.convives.map((c, i) => {
-        const line = convLines[i];
-        return line ? {
-          ...c,
-          nom: line.querySelector('.conv-nom').value.trim() || c.nom || 'Convive',
-          coefficient: parseFloat(line.querySelector('.conv-coef').value) || c.coefficient
-        } : c;
-      });
+      const convives = readPeople();
+      const main = convives[0] || {};
       return {
         objectif: document.getElementById('p-objectif').value,
         nb_personnes: convives.length,
@@ -635,14 +873,20 @@
         kcal_cible_jour: parseInt(document.getElementById('p-kcal').value, 10) || 2500,
         proteines_cible_jour_g: parseInt(document.getElementById('p-prot').value, 10) || 120,
         budget_hebdo_eur: parseFloat(document.getElementById('p-budget').value) || 0,
-        exclusions: document.getElementById('p-excl').value.split(',').map(s => s.trim()).filter(Boolean),
+        exclusions: [...new Set(convives.flatMap(c => c.exclusions))],
         preferences_libres: document.getElementById('p-prefs').value.trim(),
+        metrics: {
+          poids_kg: main.poids_kg, taille_cm: main.taille_cm, age: main.age,
+          sexe: main.sexe, activite: main.activite
+        },
+        cibles_auto: document.getElementById('p-auto').checked,
         complexite: document.getElementById('p-complexite').value,
         cuisines: [...view.querySelectorAll('.chip[data-cuisine].on')].map(c => c.dataset.cuisine),
         convives,
         presence: base.presence
       };
     }
+
     document.getElementById('p-save').addEventListener('click', () => {
       try {
         Store.setProfile(readProfileForm(p));
@@ -651,16 +895,33 @@
         toast('Échec enregistrement : ' + err.message, true);
       }
     });
+
+    refreshBesoins();
   }
 
   /* ---------- settings dialog ---------- */
   const dlgSettings = document.getElementById('dlg-settings');
+  const PREF_LABELS = {
+    '0': 'Le moins cher avant tout',
+    '0.25': 'Plutôt le prix',
+    '0.5': 'Équilibre prix / composition',
+    '0.75': 'Plutôt la qualité nutritionnelle',
+    '1': 'La meilleure composition avant tout'
+  };
+  function updatePrefLabel() {
+    const v = document.getElementById('set-pref-sante').value;
+    document.getElementById('set-pref-label').textContent = PREF_LABELS[v] || '';
+  }
+  document.getElementById('set-pref-sante').addEventListener('input', updatePrefLabel);
   document.getElementById('btn-settings').addEventListener('click', () => {
     const s = Store.getSettings();
     document.getElementById('set-api-key').value = s.apiKey;
     document.getElementById('set-model').value = s.model;
     document.getElementById('set-worker-url').value = s.workerUrl;
     document.getElementById('set-worker-secret').value = s.workerSecret;
+    document.getElementById('set-pref-sante').value = s.prefSante ?? 0.5;
+    document.getElementById('set-budget-article').value = s.budgetMaxArticle ?? '';
+    updatePrefLabel();
     dlgSettings.showModal();
   });
   document.getElementById('form-settings').addEventListener('submit', (e) => {
@@ -670,7 +931,9 @@
           apiKey: document.getElementById('set-api-key').value.trim(),
           model: document.getElementById('set-model').value,
           workerUrl: document.getElementById('set-worker-url').value.trim(),
-          workerSecret: document.getElementById('set-worker-secret').value.trim()
+          workerSecret: document.getElementById('set-worker-secret').value.trim(),
+          prefSante: parseFloat(document.getElementById('set-pref-sante').value),
+          budgetMaxArticle: parseFloat(document.getElementById('set-budget-article').value) || null
         });
         toast('Réglages enregistrés ✓');
       } catch (err) {

@@ -10,7 +10,7 @@ RÈGLES ABSOLUES :
 2. Chaque nom_canonique est en minuscules, au singulier, sans marque. Réutilise EXACTEMENT le même nom canonique pour un même ingrédient d'une recette à l'autre.
 3. Unités : uniquement "g", "ml", "piece". Convertis les mesures ménagères (1 c.à.s = 15 ml).
 4. fond_de_placard: true pour sel, poivre, huiles, épices, vinaigres, miel.
-5. Batch cooking : 4 à 6 recettes maximum, portions multiples.
+5. Batch cooking : 4 à 6 recettes maximum, portions multiples. Étapes concises : 3 à 6 lignes par recette, une phrase chacune.
 6. Le planning respecte les DLC : ingrédients peremption_type "tres_courte" cuisinés dans les 2-3 premiers jours.
 7. Les macros cumulées de chaque jour approchent kcal_cible_jour (±5 %) et atteignent proteines_cible_jour_g.
 8. Respecte exclusions sans exception.
@@ -20,7 +20,9 @@ RÈGLES ABSOLUES :
 12. Les cibles kcal/protéines s'appliquent à l'adulte principal (coefficient 1). Les recettes restent familiales : les couverts partiels mangent les mêmes plats en portion réduite.
 13. DISPONIBILITÉ EN MAGASIN — règle stricte : chaque nom_canonique doit désigner un produit réellement trouvable dans un hypermarché français ordinaire. Utilise en priorité les termes exacts du bloc CATALOGUE fourni. Si une recette demande un ingrédient absent du catalogue, remplace-le par l'équivalent le plus proche qui y figure (ex. galanga → gingembre frais, mirin → vinaigre de cidre + sucre, burrata → mozzarella). N'invente jamais un produit d'épicerie spécialisée, de primeur exotique ou de marque précise.
 14. complexite fixe l'ambition technique : "express" = ≤ 20 min, peu d'étapes, une seule poêle/casserole ; "simple" = ≤ 40 min, techniques de base, jusqu'à 8 étapes ; "elabore" = ≤ 90 min, plusieurs cuissons, marinades et sauces autorisées. Respecte le plafond de temps (temps_preparation_min + temps_cuisson_min) pour CHAQUE recette.
-15. cuisines liste les styles culinaires souhaités : répartis les recettes de la semaine entre ces styles, en restant fidèle à leurs bases (assaisonnements, techniques) mais uniquement avec des ingrédients du catalogue. Si la liste est vide, varie librement.
+15. interdits_absolus : ces ingrédients ne doivent JAMAIS apparaître, sous aucune forme, même en trace ou en substitut proche (allergies et régimes). n_aime_pas : simples dégoûts — évite-les, mais un usage discret et bien intégré (fondu dans une sauce, mixé) reste toléré si nécessaire.
+16. jours_entrainement donne, par jour de la semaine, qui s'entraîne. Ces jours-là, augmente les glucides (+15 à 20 % environ) et place les repas les plus riches en protéines autour de la séance. Les jours sans entraînement, réduis légèrement les glucides à calories équivalentes.
+17. cuisines liste les styles culinaires souhaités : répartis les recettes de la semaine entre ces styles, en restant fidèle à leurs bases (assaisonnements, techniques) mais uniquement avec des ingrédients du catalogue. Si la liste est vide, varie librement.
 
 STRUCTURE ATTENDUE (types) :
 {
@@ -47,22 +49,35 @@ STRUCTURE ATTENDUE (types) :
     return text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
   }
 
+  const TIMEOUT_MS = 180000; // 3 min hard ceiling per call
+
   async function callApi(settings, messages, systemPrompt) {
-    const res = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': settings.apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify({
-        model: settings.model,
-        max_tokens: 8000,
-        system: systemPrompt,
-        messages
-      })
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    let res;
+    try {
+      res = await fetch(API_URL, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': settings.apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+          model: settings.model,
+          max_tokens: 16000,
+          system: systemPrompt,
+          messages
+        })
+      });
+    } catch (err) {
+      if (err.name === 'AbortError') throw new Error('Délai dépassé (3 min). Réessaie.');
+      throw new Error(`Réseau : ${err.message}`);
+    } finally {
+      clearTimeout(timer);
+    }
     if (!res.ok) {
       const body = await res.text();
       throw new Error(`API ${res.status}: ${body.slice(0, 300)}`);
@@ -72,12 +87,16 @@ STRUCTURE ATTENDUE (types) :
       .filter(b => b.type === 'text')
       .map(b => b.text)
       .join('\n');
-    if (!text) throw new Error('Empty API response');
+    if (!text) throw new Error('Réponse vide de l\'API');
+    // Truncated output would silently fail JSON.parse and trigger a useless retry.
+    if (data.stop_reason === 'max_tokens') {
+      throw new Error('Réponse tronquée : réduis le nombre de repas/jour ou de convives.');
+    }
     return text;
   }
 
   /* Generate the weekly plan. onStatus(msg) reports progress to the UI. */
-  async function generate({ profile, inventory, dateDebut, couverts, noteAjustement, onStatus }) {
+  async function generate({ profile, inventory, dateDebut, couverts, joursSport, interdits, detestes, noteAjustement, onStatus }) {
     const settings = Store.getSettings();
     if (!settings.apiKey) throw new Error('NO_API_KEY');
 
@@ -86,6 +105,9 @@ STRUCTURE ATTENDUE (types) :
       profil: profilLite,
       date_debut: dateDebut,
       couverts_par_repas: couverts || undefined,
+      jours_entrainement: joursSport && Object.keys(joursSport).length ? joursSport : undefined,
+      interdits_absolus: interdits?.length ? interdits : undefined,
+      n_aime_pas: detestes?.length ? detestes : undefined,
       note_ajustement: noteAjustement || undefined,
       inventaire: inventory.map(i => ({
         nom_canonique: i.nom_canonique, quantite: i.quantite, unite: i.unite, dlc: i.dlc || undefined
@@ -99,7 +121,7 @@ STRUCTURE ATTENDUE (types) :
     const system = `${SYSTEM_PROMPT}\n\n${Catalogue.promptBlock(matches, unavailable)}`;
 
     const messages = [{ role: 'user', content: JSON.stringify(userPayload) }];
-    onStatus?.('Génération du plan de semaine…');
+    onStatus?.('Génération du plan de semaine… (1/3)');
     let text = await callApi(settings, messages, system);
 
     let plan = null;
@@ -116,7 +138,7 @@ STRUCTURE ATTENDUE (types) :
         if (attempt >= 1) {
           throw new Error(`Plan invalide après correction : ${check.errors.slice(0, 5).join(' | ')}`);
         }
-        onStatus?.('Sortie invalide, auto-correction…');
+        onStatus?.('Format à corriger, nouvelle tentative… (2/3)');
         messages.push({ role: 'assistant', content: text });
         messages.push({
           role: 'user',
@@ -133,7 +155,7 @@ STRUCTURE ATTENDUE (types) :
         plan.hors_catalogue = odd.length ? odd : undefined;
         return plan;
       }
-      onStatus?.('Vérification de la disponibilité en magasin…');
+      onStatus?.('Ajustement au catalogue Leclerc… (3/3)');
       messages.push({ role: 'assistant', content: text });
       messages.push({
         role: 'user',

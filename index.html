@@ -50,6 +50,13 @@
       <label>Secret du Worker
         <input type="password" id="set-worker-secret" autocomplete="off" />
       </label>
+      <label>Choix des produits : prix ↔ santé
+        <input type="range" id="set-pref-sante" min="0" max="1" step="0.25" />
+      </label>
+      <p class="hint" id="set-pref-label"></p>
+      <label>Plafond par article (€, optionnel)
+        <input type="number" id="set-budget-article" step="0.5" placeholder="ex. 8" />
+      </label>
       <div class="dialog-actions">
         <button value="cancel" class="btn ghost">Annuler</button>
         <button value="ok" class="btn primary" id="set-save">Enregistrer</button>
@@ -64,6 +71,7 @@
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script src="js/store.js"></script>
+  <script src="js/scoring.js"></script>
   <script src="js/catalogue.js"></script>
   <script src="js/schema.js"></script>
   <script src="js/generator.js"></script>

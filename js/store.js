@@ -43,8 +43,21 @@ const Store = (() => {
     }
   }
 
+  function personneVide(id, nom) {
+    return {
+      id, nom,
+      age: null, sexe: 'homme', poids_kg: null, taille_cm: null,
+      activite: 'modere',
+      objectif: null,                     // null = suit l'objectif du foyer
+      sport: { seances_par_semaine: 0, intensite: 'moderee', jours: [] },
+      exclusions: [],                     // interdits (allergie, régime)
+      deteste: [],                        // simples dégoûts
+      coefficient: null                   // null = dérivé des besoins
+    };
+  }
+
   function defaultProfile() {
-    const convives = [{ id: 'moi', nom: 'Moi', coefficient: 1 }];
+    const convives = [personneVide('moi', 'Moi')];
     return {
       objectif: 'prise_de_muscle',
       nb_personnes: 1,
@@ -56,6 +69,8 @@ const Store = (() => {
       preferences_libres: '',
       complexite: 'simple',
       cuisines: [],
+      metrics: { poids_kg: null, taille_cm: null, age: null, sexe: 'homme', activite: 'modere' },
+      cibles_auto: true,
       convives,
       presence: defaultPresence(convives)
     };
@@ -64,8 +79,13 @@ const Store = (() => {
   return {
     REPAS_TYPES,
     defaultPresence,
+    personneVide,
 
-    getSettings: () => ({ apiKey: '', model: 'claude-sonnet-4-6', workerUrl: '', workerSecret: '', ...read(KEYS.settings, {}) }),
+    getSettings: () => ({
+      apiKey: '', model: 'claude-sonnet-4-6', workerUrl: '', workerSecret: '',
+      prefSante: 0.5, budgetMaxArticle: null,
+      ...read(KEYS.settings, {})
+    }),
     setSettings: (s) => write(KEYS.settings, s),
 
     getProfile: () => {
@@ -73,11 +93,28 @@ const Store = (() => {
       const p = { ...defaultProfile(), ...stored };
       // migration: older profiles have no convives/presence
       if (!Array.isArray(p.convives) || p.convives.length === 0) {
-        p.convives = [{ id: 'moi', nom: 'Moi', coefficient: 1 }];
+        p.convives = [personneVide('moi', 'Moi')];
+      }
+      // migration: convives created before v1.6 lack metrics/sport/restrictions
+      p.convives = p.convives.map((c, i) => ({
+        ...personneVide(c.id || `c${i}`, c.nom || 'Convive'),
+        ...c,
+        sport: { seances_par_semaine: 0, intensite: 'moderee', jours: [], ...(c.sport || {}) },
+        exclusions: c.exclusions || [],
+        deteste: c.deteste || []
+      }));
+      // the main adult inherits the legacy top-level metrics
+      if (p.convives[0] && !p.convives[0].age && p.metrics?.age) {
+        p.convives[0] = { ...p.convives[0], ...p.metrics };
       }
       if (!p.presence || typeof p.presence !== 'object') {
         p.presence = defaultPresence(p.convives);
       }
+      // migration: older profiles have no body metrics
+      p.metrics = {
+        poids_kg: null, taille_cm: null, age: null, sexe: 'homme', activite: 'modere',
+        ...(p.metrics || {})
+      };
       return p;
     },
     setProfile: (p) => write(KEYS.profile, p),

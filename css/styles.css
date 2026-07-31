@@ -425,3 +425,51 @@ input:focus-visible, select:focus-visible, textarea:focus-visible, .btn:focus-vi
 .chip.banned { border-color: var(--paprika); color: var(--paprika); }
 .chip.banned:hover { background: var(--paprika); color: #fff; }
 .chip:focus-visible { outline: 2px solid var(--basil); outline-offset: 1px; }
+
+/* ---------- cibles automatiques (v1.5) ---------- */
+.switch { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-weight: 600; font-size: 0.85rem; }
+.switch input { width: auto; margin: 0; flex: 0 0 auto; width: 18px; height: 18px; accent-color: var(--basil); }
+.calc-box {
+  background: var(--porcelain);
+  border-left: 3px solid var(--basil);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+.calc-main { font-family: var(--font-display); font-size: 0.95rem; }
+.calc-main b { color: var(--basil-deep); }
+.calc-detail { font-family: var(--font-mono); font-size: 0.75rem; color: var(--ink-soft); margin-top: 3px; }
+
+/* ---------- foyer : fiches personnes (v1.6) ---------- */
+.person {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--basil);
+  border-radius: var(--radius);
+  padding: var(--pad);
+  margin-bottom: 12px;
+}
+.person-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.person-head .c-nom { margin-top: 0; font-family: var(--font-display); font-weight: 700; }
+.person-head .del { background: none; border: none; color: var(--ink-soft); cursor: pointer; font-size: 1.05rem; }
+.person-head .del:hover { color: var(--paprika); }
+.sub-title {
+  font-family: var(--font-display); font-weight: 700; font-size: 0.72rem;
+  text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-soft);
+  margin: 14px 0 8px; padding-top: 10px; border-top: 1px solid var(--line);
+}
+.days-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; margin-bottom: 4px; }
+.day-btn {
+  padding: 9px 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.day-btn.on { background: var(--basil); border-color: var(--basil-deep); color: #fff; font-weight: 600; }
+.day-btn:focus-visible { outline: 2px solid var(--basil); outline-offset: 1px; }
+.person .calc-box { margin-top: 14px; margin-bottom: 0; }
