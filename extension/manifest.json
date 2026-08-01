@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Panier Repas",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Remplit ton panier de courses en ligne à partir de la liste générée par Panier Repas. Choisit le meilleur rapport qualité/prix et s'arrête toujours avant le paiement.",
   "permissions": [
     "storage",

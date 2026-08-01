@@ -561,3 +561,26 @@ ol.etapes li { margin-bottom: 6px; }
 .budget-jauge { height: 6px; background: var(--porcelain); border-radius: 3px; margin-top: 8px; overflow: hidden; }
 .budget-jauge > div { height: 100%; background: var(--basil); }
 .card.budget.warn .budget-jauge > div { background: var(--paprika); }
+.ticket-line .px-reel { color: var(--basil-deep); }
+.ticket-line .px-estime { color: var(--ink-soft); font-weight: 500; }
+.ticket-line .px-inconnu { color: var(--line); }
+.ticket-reste {
+  font-family: var(--font-mono); font-size: 0.7rem; color: var(--warn);
+  padding: 0 0 3px 14px; margin-top: -2px;
+}
+
+/* ---------- chaînage des restes (v3.5) ---------- */
+.card.chaine { border-left: 4px solid var(--basil); }
+.chaine-ligne { padding: 8px 0; border-bottom: 1px dashed var(--line); }
+.chaine-ligne:last-child { border-bottom: none; }
+.chaine-nom { font-family: var(--font-mono); font-size: 0.76rem; color: var(--ink-soft); margin-bottom: 4px; }
+.chaine-suite { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.chaine-etape {
+  background: var(--porcelain); border-radius: 7px; padding: 4px 8px;
+  font-size: 0.78rem; line-height: 1.3;
+}
+.chaine-etape b { font-family: var(--font-mono); font-size: 0.7rem; color: var(--basil-deep); }
+.chaine-etape i { font-family: var(--font-mono); font-style: normal; font-size: 0.7rem; color: var(--ink-soft); }
+.chaine-fleche { color: var(--basil); font-weight: 700; }
+.chaine-reste { font-family: var(--font-mono); font-size: 0.7rem; color: var(--warn); margin-top: 4px; }
+.chaine-ok { font-family: var(--font-mono); font-size: 0.7rem; color: var(--ok); margin-top: 4px; }

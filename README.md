@@ -666,3 +666,120 @@ renommée.
 
 La liste est visible et réversible dans le Profil, comme les ingrédients bannis :
 une touche sur un plat le réautorise.
+
+## v3.2 — Shadow DOM : pourquoi les boutons restaient introuvables
+
+« Bouton d'ajout introuvable » revenait sur citron, concombre, ciboulette — des
+produits pourtant bien affichés. La cause : les sites modernes encapsulent
+leurs composants dans des **shadow roots**, que `querySelectorAll` ne traverse
+pas et dont `textContent` ne renvoie rien. Une carte produit paraissait vide et
+sans bouton alors qu'elle était sous les yeux.
+
+Trois corrections dans l'adapter :
+
+- **Traversée profonde** : `tousLesNoeuds()` et `chercherProfond()` descendent
+  dans chaque shadow root, jusqu'à douze niveaux. Détection de la grille,
+  recherche du bouton et extraction passent par là.
+- **Remontée traversante** : à l'intérieur d'un composant, `parentElement`
+  s'arrête au bord. `parentTraversant()` saute sur l'hôte du shadow root, sans
+  quoi la détection de la grille de produits ne remontait jamais assez haut.
+- **Texte réellement affiché** : `texteVisible()` concatène le contenu des
+  shadow roots. C'est ce qui manquait pour lire les prix et les titres.
+
+S'y ajoute la gestion des **listes virtualisées** : la carte est amenée à
+l'écran et on laisse 600 ms au rendu avant de chercher son bouton.
+
+### Diagnostic exploitable
+`StoreAdapter.diagnostic()` produit désormais un rapport complet — nombre
+d'éléments, combien portent un shadow root, ce qui a été extrait des trois
+premières cartes, le HTML du bouton trouvé, la liste des cliquables candidats,
+les points d'entrée appris — et le **copie dans le presse-papiers**. De quoi
+corriger sans deviner.
+
+Validé sur trois structures sans rien en commun, dont une entièrement en
+composants web à shadow DOM.
+
+## v3.3 — Le ticket cesse d'afficher 0,00 €
+
+Deux défauts que le ticket rendait visibles.
+
+### Le total ignorait l'estimation
+Depuis la v2.9 l'app sait estimer chaque ingrédient, mais le ticket utilisait
+encore l'ancien calcul, qui ne comptait que les produits explicitement associés
+— d'où un « TOTAL ESTIMÉ 0.00€ » sur un panier de quarante lignes.
+
+Le ticket affiche maintenant un prix par ligne et un total réel, avec la
+hiérarchie habituelle : prix relevés en magasin, puis produits associés, puis
+table de référence. **En vert les prix relevés, en gris les estimations**, et
+le pied de ticket dit la proportion : « 4 prix relevés chez Intermarché, 14
+estimés ».
+
+### Les prix s'enregistrent tout seuls
+Le relevé complet exigeait le mode API, qui ne s'active pas partout. Mais chaque
+produit que le pilote ajoute au panier connaît déjà son prix : il alimente
+désormais la table au fil de l'eau, quel que soit le mode. Remplir un panier
+suffit donc à rendre l'estimation de la semaine suivante exacte, sans rien faire
+de plus.
+
+Le bouton « Relever les prix » récupère ce qui a été collecté, et prépare la
+liste complète pour un relevé rapide si le mode API finit par s'activer.
+
+## v3.4 — Composer avec les formats vendus en magasin
+
+Une recette qui demande 100 ml de lait de coco quand le magasin le vend par
+400 ml gaspille les trois quarts du pack. L'app connaissait ces formats — via
+les produits associés et le relevé de prix — mais n'en tenait aucun compte pour
+composer les menus.
+
+### Les conditionnements entrent dans la génération
+Le payload contient désormais `conditionnements` : la contenance réellement
+vendue pour chaque ingrédient connu. La consigne demande de dimensionner les
+recettes sur des **packs entiers**, avec deux stratégies dans l'ordre :
+
+1. ajuster la quantité d'une recette pour consommer tout le pack ;
+2. **prévoir une seconde recette dans la semaine qui utilise le reste** — la
+   solution élégante : de la variété en plus, rien de plus dans le panier.
+
+La consigne tient compte de la fraîcheur : un reste de crème se recuisine dans
+les trois jours, un reste de riz peut attendre.
+
+### Audit après génération
+`Aggregator.analyserEmballages()` calcule, ingrédient par ingrédient, le nombre
+de packs, ce qui reste et **ce que ce reste coûte**. Au-delà de trois ingrédients
+gaspillés à plus de 25 %, ou de 5 € de produit inutilisé, un patch ciblé est
+demandé au modèle avec le détail des restes.
+
+### Visible dans le panier
+Un bandeau annonce le total — « 📦 4,09 € de restes après cette semaine » — et
+chaque ligne concernée porte son détail : « ↳ 1×400g — il restera 240g (1,68€) ».
+
+### Et les restes ne se perdent pas
+L'inventaire enregistre désormais **le contenu des packs achetés**, pas le besoin
+des recettes. La différence — le reste — est donc disponible la semaine suivante :
+un pack de quinoa de 400 g acheté pour 160 g couvre entièrement les 150 g de la
+semaine d'après, sans rien racheter.
+
+## v3.5 — Le chaînage des restes, rendu visible
+
+La v3.4 demandait déjà au modèle de finir les packs entamés dans une autre
+recette de la semaine. Mais rien ne le montrait : optimisation invisible,
+donc invérifiable.
+
+`Aggregator.chainageRestes()` détecte les packs partagés entre plusieurs plats —
+un ingrédient utilisé par deux recettes ou plus, dont le total tient dans un
+seul conditionnement — et les ordonne par jour d'utilisation.
+
+**Sur l'écran Semaine**, une carte récapitule :
+
+> ♻️ 1 pack partagé entre plusieurs plats
+> lait de coco · 400ml
+> **Lun** Curry de poulet au lait de coco *300ml* → **Mar** Dahl de lentilles
+> corail au coco *100ml*
+> *pack entièrement utilisé*
+
+**Dans la fiche d'un plat**, la même information vue de l'intérieur : « ♻️ lait
+de coco — pack de 400ml : le reste sert Mar à Dahl de lentilles corail au coco. »
+Et pour le plat qui reçoit : « ouvert Lun pour Curry de poulet ».
+
+La consigne de génération a été précisée avec cet exemple exact, pour que le
+comportement devienne systématique sur les briques, pots et bocaux entamés.

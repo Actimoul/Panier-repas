@@ -114,6 +114,20 @@
           depasse ? ` · dépassement de ${(coutPanier.total - budget).toFixed(2)} €` : ''}</p>
       </div>`;
     }
+    const chaines = Aggregator.chainageRestes(plan, Store.getMatches());
+    const chaineCard = chaines.length ? `
+      <div class="card chaine">
+        <b>♻️ ${chaines.length} pack${chaines.length > 1 ? 's' : ''} partagé${chaines.length > 1 ? 's' : ''} entre plusieurs plats</b>
+        ${chaines.slice(0, 4).map(c => `
+          <div class="chaine-ligne">
+            <div class="chaine-nom">${esc(c.nom)} · ${c.pack}${c.unite === 'piece' ? ' pc' : c.unite}</div>
+            <div class="chaine-suite">${c.usages.map(u =>
+              `<span class="chaine-etape"><b>${DAY_LABELS[u.jour - 1]}</b> ${esc(u.nom.slice(0, 26))} <i>${u.quantite}${u.unite === 'piece' ? ' pc' : u.unite}</i></span>`
+            ).join('<span class="chaine-fleche">→</span>')}</div>
+            ${c.reste > 0 ? `<div class="chaine-reste">reste ${c.reste}${c.unite === 'piece' ? ' pc' : c.unite}</div>` : '<div class="chaine-ok">pack entièrement utilisé</div>'}
+          </div>`).join('')}
+      </div>` : '';
+
     const horsCat = plan.hors_catalogue || [];
     const horsCatCard = horsCat.length
       ? `<div class="card delivery warn"><b>⚠️ ${horsCat.length} ingrédient(s) peut-être introuvable(s)</b>
@@ -183,6 +197,7 @@
       <div class="section-title">Semaine du ${esc(plan.semaine.date_debut)} ${varieteBadge} ${coutLigne}</div>
       ${weightCard}
       ${budgetCard}
+      ${chaineCard}
       ${horsCatCard}
       <div class="seg">
         <button class="seg-btn ${semaineVue === 'tableau' ? 'on' : ''}" data-vue="tableau">Tableau</button>
@@ -278,6 +293,20 @@
           ? `<ol class="etapes">${r.etapes.map(e => `<li>${esc(e)}</li>`).join('')}</ol>`
           : `<div id="etapes-zone"><button class="btn ghost block" id="btn-etapes">Voir la préparation</button></div>`}
 
+        ${(() => {
+          const ch = Aggregator.chainageRestes(plan, Store.getMatches())
+            .filter(c => c.usages.some(u => u.recetteId === r.id));
+          if (!ch.length) return '';
+          return `<div class="sub-title">Packs partagés</div>` + ch.map(c => {
+            const moi = c.usages.findIndex(u => u.recetteId === r.id);
+            const avant = c.usages.slice(0, moi);
+            const apres = c.usages.slice(moi + 1);
+            const bouts = [];
+            if (avant.length) bouts.push(`ouvert ${DAY_LABELS[avant[0].jour - 1]} pour ${esc(avant[0].nom)}`);
+            if (apres.length) bouts.push(`le reste sert ${DAY_LABELS[apres[0].jour - 1]} à ${esc(apres[0].nom)}`);
+            return `<p class="hint" style="margin:0 0 6px">♻️ <b>${esc(c.nom)}</b> — pack de ${c.pack}${c.unite === 'piece' ? ' pc' : c.unite} : ${bouts.join(', ')}.</p>`;
+          }).join('');
+        })()}
         ${autres.length ? `<p class="hint">Ce plat revient aussi : ${
           autres.map(p => `${DAY_LABELS[p.jour - 1]} ${MEAL_LABELS[p.repas] || p.repas}`).join(', ')
         }.${mode === 'repas' ? ` En le préparant d'un coup (${Math.round(totalPortions * 10) / 10} couverts au total), tu ne cuisines qu'une fois.` : ''}</p>` : ''}
@@ -466,7 +495,13 @@
     const groups = Aggregator.groupByRayon(items.filter(it => it.aAcheter > 0 || it.enStock > 0));
     const toBuy = items.filter(it => it.aAcheter > 0);
     const matchedCount = toBuy.filter(it => it.match).length;
-    const { total, complete } = Aggregator.totalEstime(items);
+    // Estimation complète : prix relevés en magasin, puis produits associés,
+    // puis table de référence. Un ticket à 0,00 € n'aide personne.
+    const cout = Aggregator.estimerCout(items);
+    const emb = Aggregator.analyserEmballages(items, matches);
+    const restesParNom = Object.fromEntries(emb.lignes.map(l => [l.nom, l]));
+    const prixParLigne = Object.fromEntries(cout.details.map(d => [d.nom, d]));
+    const releveActif = Store.getPrix();
     const slots = Store.getSlots();
     const delivery = Aggregator.recommendDelivery(plan, items, slots);
     let deliveryCard = '';
@@ -502,10 +537,17 @@
         const qty = it.packs && it.match
           ? `${it.packs} × ${esc(it.match.libelle)}`
           : Aggregator.fmtQty(it.aAcheter, it.unite);
-        const price = typeof it.prix_estime === 'number' ? ` <b>${it.prix_estime.toFixed(2)}€</b>` : '';
+        const d = prixParLigne[it.nom_canonique];
+        const price = d
+          ? ` <b class="${d.source === 'reel' ? 'px-reel' : 'px-estime'}">${d.prix.toFixed(2)}€</b>`
+          : ' <span class="px-inconnu">?</span>';
+        const l = restesParNom[it.nom_canonique];
+        const reste = l && l.part >= 20 && l.reste > 0
+          ? `<div class="ticket-reste">↳ ${l.packs}×${l.pack}${l.unite === 'piece' ? ' pc' : l.unite} — il restera ${l.reste}${l.unite === 'piece' ? ' pc' : l.unite}${l.coutReste ? ` (${l.coutReste.toFixed(2)}€)` : ''}</div>`
+          : '';
         return `<div class="ticket-line ${cls}" data-name="${esc(it.nom_canonique)}" tabindex="0" role="button">
           <span class="name">${esc(it.nom_canonique)}</span><span class="dots"></span><span class="qty">${qty}${price}</span>
-        </div>`;
+        </div>${reste}`;
       }).join('');
       return `<div class="ticket-rayon">${esc(g.label)}</div>${rows}`;
     }).join('');
@@ -514,14 +556,27 @@
       <div class="section-title">Liste de courses
         <span class="badge ${matchedCount === toBuy.length ? 'ok' : 'warn'}">${matchedCount}/${toBuy.length} produits associés</span>
       </div>
+      ${emb.lignes.length && emb.valeurPerdue > 0.5 ? `
+        <div class="card delivery ${emb.valeurPerdue > 4 ? 'warn' : 'ok'}">
+          <b>📦 ${emb.valeurPerdue.toFixed(2)} € de restes après cette semaine</b>
+          <p class="hint" style="margin:6px 0 0">${
+            emb.gaspilleurs.length
+              ? `${emb.gaspilleurs.slice(0, 3).map(g => `${esc(g.nom)} (${g.reste}${g.unite === 'piece' ? ' pc' : g.unite})`).join(', ')}${emb.gaspilleurs.length > 3 ? '…' : ''}. Ces restes partent dans ton inventaire et seront réutilisés la semaine prochaine.`
+              : 'Les quantités collent bien aux formats vendus.'
+          }</p>
+        </div>` : ''}
       ${deliveryCard}
       <div class="ticket">
         <div class="ticket-header">${esc((Store.getSettings().enseigne || 'intermarche').toUpperCase())} · SEMAINE ${esc(plan.semaine.date_debut)}</div>
         ${lines || '<p>Rien à acheter — tout est en stock.</p>'}
-        <div class="ticket-total"><span>TOTAL ESTIMÉ</span><span>${total.toFixed(2)}€${complete ? '' : ' *'}</span></div>
-        ${complete ? '' : '<div class="ticket-foot">* partiel : associe les produits (lignes "?") pour un total complet</div>'}
+        <div class="ticket-total"><span>TOTAL${cout.estimes ? ' ESTIMÉ' : ''}</span><span>${cout.total.toFixed(2)}€</span></div>
+        <div class="ticket-foot">${
+          releveActif
+            ? `${cout.connus} prix relevés chez ${esc(releveActif.enseigne)}, ${cout.estimes} estimés`
+            : `${cout.connus} prix réels, ${cout.estimes} estimés — un relevé en magasin rendrait ce total exact`
+        }</div>
       </div>
-      <p class="hint">Touche une ligne "?" pour l'associer à un produit Leclerc. L'association est mémorisée pour toutes les semaines suivantes.</p>
+      <p class="hint">Prix en vert : relevés en magasin. En gris : estimations. Touche une ligne pour associer un produit précis.</p>
       ${(() => {
         const r = Store.getPrix();
         return r
@@ -593,21 +648,25 @@
         return;
       }
       try {
-        // d'abord : un relevé est-il déjà prêt côté extension ?
+        // Récupérer ce que l'extension a déjà relevé (relevé complet, ou
+        // prix collectés au fil des produits ajoutés au panier).
         const rep = await Bridge.recupererPrix();
-        if (rep.releve && Object.keys(rep.releve.prix || {}).length) {
+        const dejaLa = Object.keys(rep.releve?.prix || {}).length;
+        if (dejaLa) {
           Store.setPrix(rep.releve);
           renderPanier();
-          toast(`${Object.keys(rep.releve.prix).length} prix récupérés ✓`);
-          return;
         }
-        // sinon : préparer la liste et renvoyer vers le site
+
+        // Préparer la liste pour un relevé complet la prochaine fois.
         const ingredients = [...new Set([
           ...items.filter(i => i.aAcheter > 0).map(i => i.nom_canonique),
           ...Catalogue.flat()
         ])];
         await Bridge.demanderReleve(ingredients);
-        toast(`${ingredients.length} ingrédients à relever — va sur le site du magasin et clique « Relever les prix »`);
+
+        toast(dejaLa
+          ? `${dejaLa} prix récupérés ✓ — va sur le site du magasin pour compléter`
+          : `Aucun prix encore relevé. Va sur le site du magasin : les prix s'enregistrent quand le panier se remplit.`);
       } catch (err) {
         toast('Échec : ' + err.message, true);
       } finally {
@@ -674,9 +733,12 @@
     });
 
     document.getElementById('btn-ordered').addEventListener('click', () => {
-      if (!confirm('Marquer la commande comme passée ? Les quantités achetées seront ajoutées à ton inventaire avec des DLC estimées.')) return;
+      const msg = emb.valeurPerdue > 0.5
+        ? `Marquer la commande comme passée ?\n\nLes packs achetés entrent dans ton inventaire — dont ${emb.valeurPerdue.toFixed(2)} € de restes qui seront réutilisés la semaine prochaine.`
+        : 'Marquer la commande comme passée ? Les quantités achetées seront ajoutées à ton inventaire avec des DLC estimées.';
+      if (!confirm(msg)) return;
       try {
-        const newInv = Aggregator.applyPurchaseToInventory(items, Store.getInventory());
+        const newInv = Aggregator.applyPurchaseToInventory(items, Store.getInventory(), matches);
         Store.setInventory(newInv);
         toast('Inventaire mis à jour ✓');
         switchTab('inventaire');

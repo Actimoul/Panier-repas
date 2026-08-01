@@ -103,7 +103,9 @@
         <button id="pr-manual">Choisir ce produit…</button>
         <button id="pr-skip">Passer</button>
       </div>
-      ${state.modeApi ? '<button id="pr-prix" class="pr-wide pr-secondaire">💶 Relever les prix du magasin</button>' : ''}
+      ${state.modeApi
+        ? '<button id="pr-prix" class="pr-wide pr-secondaire">💶 Relever tous les prix (rapide)</button>'
+        : '<div class="pr-note">💶 Les prix des produits ajoutés sont enregistrés au fil de l\'eau. Le relevé complet nécessite le mode rapide.</div>'}
       <div id="pr-status" class="pr-status"></div>
       <div id="pr-candidates"></div>
       ${logLines}
@@ -307,6 +309,30 @@
     // Ne jamais rappeler tick() en direct : on peut être appelé DEPUIS tick,
     // et le verrou `working` avalerait l'appel imbriqué. On planifie.
     if (state.auto) scheduleTick(state.modeApi ? DELAI_API : 600);
+  }
+
+  /* Record the real price of one ingredient, from the product just chosen. */
+  async function enregistrerPrix(nomCanonique, choice) {
+    if (!nomCanonique) return;
+    const parKg = Scoring.unitPrice(choice);
+    if (!(parKg > 0)) return;
+    const data = await chrome.storage.local.get(['prPrix']);
+    const releve = data.prPrix || {
+      enseigne: StoreAdapter.enseigne()?.nom || location.hostname,
+      domaine: location.hostname,
+      date: new Date().toISOString(),
+      prix: {}, echecs: []
+    };
+    releve.prix[nomCanonique] = {
+      par_kg: Math.round(parKg * 100) / 100,
+      libelle: choice.libelle,
+      prix_eur: choice.prix_eur,
+      ean: choice.ean || null,
+      score: choice.score
+    };
+    releve.date = new Date().toISOString();
+    releve.enseigne = StoreAdapter.enseigne()?.nom || releve.enseigne;
+    await chrome.storage.local.set({ prPrix: releve });
   }
 
   /* Price sweep: query the store's own API for a list of ingredients and

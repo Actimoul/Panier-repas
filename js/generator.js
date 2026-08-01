@@ -58,7 +58,14 @@ RÈGLES ABSOLUES :
 15. interdits_absolus : ces ingrédients ne doivent JAMAIS apparaître, sous aucune forme, même en trace ou en substitut proche (allergies et régimes). n_aime_pas : simples dégoûts — évite-les, mais un usage discret et bien intégré (fondu dans une sauce, mixé) reste toléré si nécessaire.
 16. jours_entrainement donne, par jour de la semaine, qui s'entraîne. Ces jours-là, augmente les glucides (+15 à 20 % environ) et place les repas les plus riches en protéines autour de la séance. Les jours sans entraînement, réduis légèrement les glucides à calories équivalentes.
 17. plats_deja_refuses liste des plats que l'utilisateur a explicitement rejetés. Ne les propose plus, ni sous le même nom, ni sous une variante à peine renommée du même plat.
-18. cuisines liste les styles culinaires souhaités : répartis les recettes de la semaine entre ces styles, en restant fidèle à leurs bases (assaisonnements, techniques) mais uniquement avec des ingrédients du catalogue. Si la liste est vide, varie librement.
+18. CONDITIONNEMENTS — le magasin vend par pack, pas au gramme près :
+   - conditionnements donne, pour chaque ingrédient connu, la contenance vendue (ex. lait de coco : 400 ml, crème fraîche : 200 ml, skyr : 450 g).
+   - Dimensionne tes recettes pour consommer des packs ENTIERS. Une recette qui demande 100 ml de lait de coco quand le pack fait 400 ml gaspille les trois quarts.
+   - Deux façons de faire, dans cet ordre de préférence : (a) ajuster la quantité d'une recette pour qu'elle utilise tout le pack ; (b) prévoir une SECONDE recette dans la semaine qui consomme le reste — c'est la solution élégante, elle apporte de la variété sans alourdir le panier.
+   - Exemple attendu : un curry du lundi utilise 300 ml sur une brique de 400 ml de lait de coco ; place alors un dahl ou une soupe le mardi ou le mercredi pour finir les 100 ml restants. Fais-le systématiquement pour les briques, pots et bocaux entamés.
+   - Attention aux périssables : un reste de crème fraîche doit être recuisiné dans les 3-4 jours, un reste de riz peut attendre.
+   - N'invente pas de contenance pour un ingrédient absent de conditionnements : reste sur des quantités rondes.
+19. cuisines liste les styles culinaires souhaités : répartis les recettes de la semaine entre ces styles, en restant fidèle à leurs bases (assaisonnements, techniques) mais uniquement avec des ingrédients du catalogue. Si la liste est vide, varie librement.
 
 STRUCTURE ATTENDUE (types) :
 {
@@ -259,6 +266,13 @@ N'inclus dans "nouvelles_recettes" que les recettes à AJOUTER — les recettes 
       }
     }
 
+    // Ce que le magasin vend réellement : contenance par ingrédient.
+    const conditionnementsConnus = {};
+    for (const nom of new Set([...Object.keys(matchesPrix), ...Object.keys(releve?.prix || {})])) {
+      const c = Aggregator.conditionnement(nom, matchesPrix);
+      if (c) conditionnementsConnus[nom] = `${c.quantite} ${c.unite}`;
+    }
+
     const v = Catalogue.VARIETES[profile.variete] || Catalogue.VARIETES.equilibre;
     const varieteCfg = {
       niveau: profile.variete || 'equilibre',
@@ -272,6 +286,7 @@ N'inclus dans "nouvelles_recettes" que les recettes à AJOUTER — les recettes 
       profil: profilLite,
       date_debut: dateDebut,
       budget_hebdo_eur: profile.budget_hebdo_eur || undefined,
+      conditionnements: conditionnementsConnus,
       prix_au_kilo: prixConnus,
       prix_source: releve ? `relevés chez ${releve.enseigne} le ${releve.date.slice(0, 10)}` : 'estimations de référence',
       variete: varieteCfg || undefined,
@@ -367,6 +382,33 @@ N'inclus dans "nouvelles_recettes" que les recettes à AJOUTER — les recettes 
               planning_actuel: compactPlanning(plan.planning),
               couverts_par_repas: couverts,
               consigne: `Remplace les recettes qui portent les postes les plus chers par des équivalents moins coûteux, à apport protéique comparable. Vise ${budget} €.`
+            }
+          }, suivi);
+          plan = appliquerPatch(plan, patch);
+          text = null;
+          continue;
+        }
+      }
+
+      // Gaspillage des conditionnements : un pack ouvert pour un quart
+      // utilisé, c'est de l'argent et de la nourriture perdus.
+      if (attempt < 2 && Object.keys(conditionnementsConnus).length >= 5) {
+        const items = Aggregator.buildBasket(plan, inventory, matches);
+        const emb = Aggregator.analyserEmballages(items, matches);
+        plan.emballages = emb;
+        if (emb.gaspilleurs.length >= 3 || emb.valeurPerdue > 5) {
+          onStatus?.(`${emb.valeurPerdue.toFixed(2)} € de restes inutilisés — ajustement…`);
+          const patch = await demanderPatch(settings, system, {
+            type: 'conditionnements',
+            probleme: `Les quantités ne collent pas aux packs vendus : ${emb.valeurPerdue.toFixed(2)} € de produit resterait inutilisé.`,
+            restes: emb.gaspilleurs.slice(0, 8).map(g =>
+              `${g.nom} : besoin ${g.besoin} ${g.unite}, vendu par ${g.pack} ${g.unite} → ${g.reste} ${g.unite} perdus (${g.part} %)`),
+            contexte: {
+              recettes_existantes: plan.recettes.map(r => ({ id: r.id, nom: r.nom })),
+              planning_actuel: compactPlanning(plan.planning),
+              couverts_par_repas: couverts,
+              conditionnements: conditionnementsConnus,
+              consigne: 'Ajuste les quantités pour consommer des packs entiers, ou ajoute une recette qui réutilise les restes dans la semaine. Ne dépasse pas les cibles caloriques.'
             }
           }, suivi);
           plan = appliquerPatch(plan, patch);

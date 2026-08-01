@@ -110,6 +110,121 @@ const Aggregator = (() => {
     return { total, complete };
   }
 
+  /* --- Conditionnements et gaspillage --------------------- */
+
+  /* What the store actually sells for a given ingredient: pack size and
+     label. Real associations first, then the price sweep (whose labels
+     carry the quantity), then nothing. */
+  function conditionnement(nomCanonique, matches) {
+    const m = (matches || {})[nomCanonique];
+    if (m && m.pack_quantite > 0 && m.pack_unite) {
+      return { quantite: m.pack_quantite, unite: m.pack_unite, libelle: m.libelle, source: 'associe' };
+    }
+    const releve = (typeof Store !== 'undefined' && Store.getPrix) ? Store.getPrix() : null;
+    const r = releve?.prix?.[nomCanonique];
+    if (r?.libelle && typeof Scoring !== 'undefined') {
+      const t = Scoring.packSize({ libelle: r.libelle });
+      if (t) return { quantite: t.quantite, unite: t.unite, libelle: r.libelle, source: 'releve' };
+    }
+    return null;
+  }
+
+  /* Per-ingredient waste analysis: how much of the last pack stays unused.
+     This is what makes "buy 1 pack of 500 g for a recipe needing 320 g"
+     visible — and fixable. */
+  function analyserEmballages(items, matches) {
+    const lignes = [];
+    let valeurPerdue = 0;
+    for (const it of items) {
+      if (it.aAcheter <= 0 || it.fondDePlacard) continue;
+      const cond = conditionnement(it.nom_canonique, matches);
+      if (!cond || cond.unite !== it.unite || !(cond.quantite > 0)) continue;
+
+      const packs = Math.ceil(it.aAcheter / cond.quantite);
+      const achete = packs * cond.quantite;
+      const reste = achete - it.aAcheter;
+      const part = achete > 0 ? reste / achete : 0;
+
+      // Le prix du reste, quand on le connaît : c'est ce qui parle vraiment.
+      let coutReste = null;
+      const releve = (typeof Store !== 'undefined' && Store.getPrix) ? Store.getPrix() : null;
+      const parKg = releve?.prix?.[it.nom_canonique]?.par_kg
+        ?? (typeof Catalogue !== 'undefined' ? Catalogue.prixReference(it.nom_canonique) : null);
+      if (parKg > 0) {
+        const kg = cond.unite === 'piece'
+          ? (reste * Catalogue.poidsPiece(it.nom_canonique)) / 1000
+          : reste / 1000;
+        coutReste = Math.round(parKg * kg * 100) / 100;
+        valeurPerdue += coutReste;
+      }
+
+      lignes.push({
+        nom: it.nom_canonique, unite: it.unite,
+        besoin: Math.round(it.aAcheter),
+        pack: cond.quantite, libelle: cond.libelle,
+        packs, achete: Math.round(achete), reste: Math.round(reste),
+        part: Math.round(part * 100), coutReste,
+        peremption: it.peremption_type
+      });
+    }
+    lignes.sort((a, b) => (b.coutReste ?? 0) - (a.coutReste ?? 0));
+    const gaspilleurs = lignes.filter(l => l.part >= 25 && l.reste > 0);
+    return {
+      lignes, gaspilleurs,
+      valeurPerdue: Math.round(valeurPerdue * 100) / 100,
+      partMoyenne: lignes.length
+        ? Math.round(lignes.reduce((a, l) => a + l.part, 0) / lignes.length)
+        : 0
+    };
+  }
+
+  /* Leftover chaining: which recipe opens a pack, and which ones finish it.
+     A 400 ml can of coconut milk used 300 ml on Monday and 100 ml on Tuesday
+     is the whole point — showing it turns an invisible optimisation into
+     something the user can trust and follow. */
+  function chainageRestes(plan, matches) {
+    const parIngredient = new Map();
+    const recettesParId = new Map(plan.recettes.map(r => [r.id, r]));
+    const ordre = new Map();   // recette_id -> premier jour d'utilisation
+
+    for (const p of plan.planning || []) {
+      if (!ordre.has(p.recette_id) || p.jour < ordre.get(p.recette_id)) {
+        ordre.set(p.recette_id, p.jour);
+      }
+    }
+
+    for (const r of plan.recettes) {
+      const jour = ordre.get(r.id);
+      if (jour === undefined) continue;
+      for (const ing of r.ingredients) {
+        if (ing.fond_de_placard) continue;
+        if (!parIngredient.has(ing.nom_canonique)) parIngredient.set(ing.nom_canonique, []);
+        parIngredient.get(ing.nom_canonique).push({
+          recetteId: r.id, nom: r.nom, jour, quantite: ing.quantite, unite: ing.unite
+        });
+      }
+    }
+
+    const chaines = [];
+    for (const [nom, usages] of parIngredient) {
+      if (usages.length < 2) continue;
+      const cond = conditionnement(nom, matches);
+      if (!cond || cond.unite !== usages[0].unite) continue;
+      const total = usages.reduce((a, u) => a + u.quantite, 0);
+      // On ne retient que le partage d'un même pack : si le total dépasse
+      // largement un pack, ce n'est plus un reste réutilisé.
+      if (total > cond.quantite * 1.05) continue;
+      usages.sort((a, b) => a.jour - b.jour);
+      chaines.push({
+        nom, pack: cond.quantite, unite: cond.unite, libelle: cond.libelle,
+        total: Math.round(total),
+        reste: Math.round(cond.quantite - total),
+        usages
+      });
+    }
+    return chaines;
+  }
+
   /* Estimated basket cost, ingredient by ingredient.
      Real prices first (products the user has associated), reference prices
      as a fallback. Returns { total, connus, estimes, details[] } so the UI
@@ -188,7 +303,7 @@ const Aggregator = (() => {
   }
 
   /* After ordering: merge the purchased quantities back into home inventory. */
-  function applyPurchaseToInventory(items, inventory) {
+  function applyPurchaseToInventory(items, inventory, matches) {
     const inv = [...inventory];
     const byName = new Map(inv.map((i, idx) => [i.nom_canonique, idx]));
     const today = new Date();
@@ -196,7 +311,14 @@ const Aggregator = (() => {
 
     for (const it of items) {
       if (it.aAcheter <= 0) continue;
-      const bought = it.packs && it.match ? it.packs * it.match.pack_quantite : it.aAcheter;
+      // Ce qui entre à la maison, c'est le contenu des packs achetés — pas le
+      // besoin des recettes. La différence est précisément le reste.
+      const cond = conditionnement(it.nom_canonique, matches);
+      const bought = it.packs && it.match
+        ? it.packs * it.match.pack_quantite
+        : (cond && cond.unite === it.unite
+            ? Math.ceil(it.aAcheter / cond.quantite) * cond.quantite
+            : it.aAcheter);
       const days = DLC_DAYS[it.peremption_type] || 30;
       const dlc = new Date(today.getTime() + days * 86400000).toISOString().slice(0, 10);
       if (byName.has(it.nom_canonique)) {
@@ -308,5 +430,5 @@ const Aggregator = (() => {
     };
   }
 
-  return { buildBasket, groupByRayon, totalEstime, estimerCout, buildExport, applyPurchaseToInventory, recommendDelivery, fmtQty, RAYON_LABELS };
+  return { buildBasket, groupByRayon, totalEstime, estimerCout, conditionnement, analyserEmballages, chainageRestes, buildExport, applyPurchaseToInventory, recommendDelivery, fmtQty, RAYON_LABELS };
 })();

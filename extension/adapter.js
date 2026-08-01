@@ -78,6 +78,33 @@ const StoreAdapter = {
     return `${location.origin}/recherche?q=${encodeURIComponent(query)}`;
   },
 
+  /* --- Traversée profonde (shadow DOM) --------------------- */
+
+  /* Les sites modernes encapsulent leurs composants dans des shadow roots,
+     que querySelectorAll ne traverse pas. Sans cette traversée, un bouton
+     « Ajouter » parfaitement visible à l'écran reste introuvable. */
+  tousLesNoeuds(racine = document.body, profondeur = 0) {
+    const out = [];
+    if (!racine || profondeur > 12) return out;
+    const walker = document.createTreeWalker(racine, NodeFilter.SHOW_ELEMENT);
+    let n = walker.currentNode;
+    while (n) {
+      out.push(n);
+      if (n.shadowRoot) out.push(...this.tousLesNoeuds(n.shadowRoot, profondeur + 1));
+      n = walker.nextNode();
+    }
+    return out;
+  },
+
+  /* querySelectorAll qui traverse les shadow roots. */
+  chercherProfond(selecteur, racine = document.body) {
+    const directs = [...(racine.querySelectorAll?.(selecteur) || [])];
+    const dansShadow = this.tousLesNoeuds(racine)
+      .filter(n => n.shadowRoot)
+      .flatMap(n => [...n.shadowRoot.querySelectorAll(selecteur)]);
+    return [...new Set([...directs, ...dansShadow])];
+  },
+
   /* --- État de la page ------------------------------------ */
 
   /* Reconnaître une page d'erreur ou de blocage AVANT d'essayer d'y lire des
@@ -86,7 +113,7 @@ const StoreAdapter = {
   ERREUR_RE: /\b(erreur\s*5\d\d|erreur\s*4\d\d|le serveur ne r[ée]pond pas|service (temporairement )?indisponible|trop de requ[êe]tes|acc[èe]s refus[ée]|maintenance en cours)\b/i,
 
   pageEnErreur() {
-    const txt = (document.body?.innerText || '').slice(0, 1200);
+    const txt = (document.body?.innerText || this.texteVisible(document.body)).slice(0, 1200);
     if (this.ERREUR_RE.test(txt)) return txt.split('\n').find(l => this.ERREUR_RE.test(l))?.trim() || 'page d\'erreur';
     // Une page réellement morte : aucun texte, aucune image, aucun script,
     // aucun élément interactif. Un squelette d'application monopage en cours
@@ -125,6 +152,28 @@ const StoreAdapter = {
     return m ? parseFloat(m[1].replace(',', '.')) : null;
   },
 
+  /* Le texte réellement affiché, shadow DOM compris : textContent s'arrête
+     au bord d'un composant et renvoie une chaîne vide pour une carte dont
+     tout le contenu est encapsulé. */
+  texteVisible(el) {
+    if (!el) return '';
+    let t = el.textContent || '';
+    if (el.shadowRoot) t += ' ' + el.shadowRoot.textContent;
+    for (const n of el.querySelectorAll ? el.querySelectorAll('*') : []) {
+      if (n.shadowRoot) t += ' ' + n.shadowRoot.textContent;
+    }
+    return t;
+  },
+
+  /* Parent d'un élément, y compris à travers une frontière de shadow DOM :
+     à l'intérieur d'un composant, parentElement s'arrête au bord et la
+     remontée échoue. On saute alors sur l'hôte du shadow root. */
+  parentTraversant(el) {
+    if (el.parentElement) return el.parentElement;
+    const racine = el.getRootNode?.();
+    return racine && racine.host ? racine.host : null;
+  },
+
   /* Signature structurelle d'un élément : sert à reconnaître
      les frères de même nature (les cartes d'une même grille). */
   signature(el) {
@@ -139,12 +188,13 @@ const StoreAdapter = {
      signature et contenant assez de texte pour être une carte. */
   findCardFor(priceEl) {
     let el = priceEl;
-    for (let depth = 0; depth < 8 && el && el.parentElement; depth++) {
-      const parent = el.parentElement;
+    for (let depth = 0; depth < 10 && el; depth++) {
+      const parent = this.parentTraversant(el);
+      if (!parent) break;
       const sig = this.signature(el);
       const siblings = [...parent.children].filter(c => this.signature(c) === sig);
-      const text = (el.textContent || '').trim();
-      if (siblings.length >= 2 && text.length > 12 && text.length < 400) {
+      const text = this.texteVisible(el).trim();
+      if (siblings.length >= 2 && text.length > 12 && text.length < 600) {
         return { card: el, siblings };
       }
       el = parent;
@@ -154,16 +204,16 @@ const StoreAdapter = {
 
   /* Repère la grille de produits de la page courante. */
   findProductGrid() {
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    // Les prix peuvent vivre dans un shadow root : on parcourt tous les
+    // éléments, shadow DOM compris, et on garde ceux qui portent un prix.
     const priceNodes = [];
-    let node;
-    while ((node = walker.nextNode())) {
-      const t = node.nodeValue;
-      if (t && t.includes('€') && this.PRICE_RE.test(t)) {
-        const el = node.parentElement;
-        if (el && el.offsetParent !== null) priceNodes.push(el);
-      }
+    for (const el of this.tousLesNoeuds()) {
       if (priceNodes.length > 60) break;
+      if (el.childElementCount !== 0) continue;
+      const t = el.textContent;
+      if (t && t.includes('€') && this.PRICE_RE.test(t) && el.offsetParent !== null) {
+        priceNodes.push(el);
+      }
     }
     if (!priceNodes.length) return [];
 
@@ -239,26 +289,27 @@ const StoreAdapter = {
   /* --- Extraction ----------------------------------------- */
 
   extractTitle(card) {
-    const heading = card.querySelector('h1,h2,h3,h4,a[title],img[alt]');
+    const heading = this.chercherProfond('h1,h2,h3,h4,a[title],img[alt]', card)[0]
+      || card.querySelector('h1,h2,h3,h4,a[title],img[alt]');
     if (heading) {
       const v = heading.getAttribute?.('title') || heading.getAttribute?.('alt') || heading.textContent;
       if (v && v.trim().length > 4) return v.trim().slice(0, 120);
     }
     // sinon : le plus long fragment de texte qui n'est pas un prix
-    const fragments = [...card.querySelectorAll('*')]
+    const fragments = this.tousLesNoeuds(card.shadowRoot || card)
       .map(e => (e.childElementCount === 0 ? (e.textContent || '').trim() : ''))
       .filter(t => t.length > 5 && !t.includes('€') && !this.ADD_LABEL_RE.test(t));
     fragments.sort((a, b) => b.length - a.length);
-    return (fragments[0] || card.textContent.trim()).slice(0, 120);
+    return (fragments[0] || this.texteVisible(card).trim()).slice(0, 120);
   },
 
   extractEan(card) {
-    const attrs = ['data-ean', 'data-gtin', 'data-barcode', 'data-sku', 'data-id-produit', 'data-product-id'];
+    const attrs = ['data-ean', 'data-gtin', 'data-barcode', 'data-sku', 'data-id-produit', 'data-product-id', 'data-id'];
     for (const a of attrs) {
-      const v = card.getAttribute?.(a) || card.querySelector(`[${a}]`)?.getAttribute(a);
-      if (v && /^\d{8,14}$/.test(v.trim())) return v.trim();
+      const v = card.getAttribute?.(a) || this.chercherProfond(`[${a}]`, card)[0]?.getAttribute(a);
+      if (v && /^\d{8,14}$/.test(String(v).trim())) return String(v).trim();
     }
-    const href = card.querySelector('a[href]')?.getAttribute('href') || '';
+    const href = this.chercherProfond('a[href]', card)[0]?.getAttribute('href') || '';
     const inHref = href.match(/\b(\d{13})\b/);
     if (inHref) return inHref[1];
     const inHtml = card.innerHTML.match(/\b(\d{13})\b/);
@@ -278,7 +329,7 @@ const StoreAdapter = {
      avant d'abandonner. */
   findAddButton(card) {
     const chercher = (racine) => {
-      const clickables = [...racine.querySelectorAll(this.SELECTEURS_CLIQUABLES)];
+      const clickables = this.chercherProfond(this.SELECTEURS_CLIQUABLES, racine);
       return clickables.find(b => this.estBoutonAjout(b)) || null;
     };
 
@@ -295,9 +346,11 @@ const StoreAdapter = {
 
     // remonter jusqu'à deux niveaux, sans déborder sur les cartes voisines
     let noeud = card;
-    for (let i = 0; i < 2 && noeud.parentElement; i++) {
-      noeud = noeud.parentElement;
-      const candidats = [...noeud.querySelectorAll(this.SELECTEURS_CLIQUABLES)]
+    for (let i = 0; i < 2; i++) {
+      const suivant = this.parentTraversant(noeud);
+      if (!suivant) break;
+      noeud = suivant;
+      const candidats = this.chercherProfond(this.SELECTEURS_CLIQUABLES, noeud)
         .filter(b => this.estBoutonAjout(b));
       if (candidats.length === 1) return candidats[0];
       // plusieurs cartes sous cet ancêtre : garder celui qui contient la carte
@@ -306,7 +359,7 @@ const StoreAdapter = {
     }
 
     // dernier recours : un cliquable non-lien dans la carte
-    return [...card.querySelectorAll(this.SELECTEURS_CLIQUABLES)]
+    return this.chercherProfond(this.SELECTEURS_CLIQUABLES, card)
       .find(b => b.tagName !== 'A') || null;
   },
 
@@ -314,7 +367,7 @@ const StoreAdapter = {
   harvestCandidates(limit = 8) {
     const cards = this.findProductGrid().slice(0, limit);
     return cards.map((card, index) => {
-      const text = card.textContent || '';
+      const text = this.texteVisible(card);
       return {
         index,
         _card: card,
@@ -337,6 +390,13 @@ const StoreAdapter = {
       : null;
     const card = match?._card || this.findProductGrid()[index];
     if (!card) throw new Error(`Produit #${index + 1} introuvable`);
+    // Les listes virtualisées ne rendent leurs boutons qu'à l'approche :
+    // on amène la carte à l'écran et on laisse le temps au rendu.
+    try {
+      card.scrollIntoView({ block: 'center' });
+      await new Promise(r => setTimeout(r, 600));
+    } catch { /* ignore */ }
+
     const btn = this.findAddButton(card);
     if (!btn) throw new Error('bouton d\'ajout introuvable sur la fiche produit');
     const libelle = this.extractTitle(card);
@@ -349,25 +409,60 @@ const StoreAdapter = {
     return this.addByIndex(0);
   },
 
-  /* Diagnostic : à lancer dans la console si quelque chose cloche. */
-  diagnostic() {
-    const cards = this.findProductGrid();
+  /* Diagnostic complet, à lancer dans la console d'une page de résultats.
+     Copie un rapport dans le presse-papiers : c'est ce rapport qui permet
+     de corriger l'adapter sans deviner. */
+  async diagnostic() {
     const e = this.enseigne();
-    console.log(`[Panier Repas] enseigne : ${e ? e.nom : 'non reconnue (' + location.hostname + ')'}`);
-    console.log(`[Panier Repas] ${cards.length} cartes détectées`);
-    cards.slice(0, 3).forEach((c, i) => console.log(` #${i}`, {
-      titre: this.extractTitle(c),
-      prix: this.parsePrice(c.textContent),
-      prixKg: this.parseUnitPrice(c.textContent),
-      ean: this.extractEan(c),
-      bouton: this.findAddButton(c)?.outerHTML?.slice(0, 90) || false
-    }));
-    return cards.length;
+    const cartes = this.findProductGrid();
+    const rapport = {
+      site: location.hostname,
+      url: location.href.slice(0, 160),
+      enseigne: e ? e.nom : 'non reconnue',
+      page_en_erreur: this.pageEnErreur(),
+      aucun_resultat: this.aucunResultat(),
+      elements_total: this.tousLesNoeuds().length,
+      elements_avec_shadow: this.tousLesNoeuds().filter(n => n.shadowRoot).length,
+      cartes_detectees: cartes.length,
+      api_recherche_apprise: null,
+      api_panier_apprise: null,
+      cartes: cartes.slice(0, 3).map(c => ({
+        titre: this.extractTitle(c),
+        prix: this.parsePrice(this.texteVisible(c)),
+        prix_kg: this.parseUnitPrice(this.texteVisible(c)),
+        ean: this.extractEan(c),
+        bouton_trouve: !!this.findAddButton(c),
+        bouton_html: this.findAddButton(c)?.outerHTML?.slice(0, 200) || null,
+        cliquables_dans_la_carte: this.chercherProfond(this.SELECTEURS_CLIQUABLES, c)
+          .slice(0, 6).map(b => `${b.tagName}.${(b.className || '').toString().slice(0, 40)} "${(b.textContent || '').trim().slice(0, 25)}" aria="${b.getAttribute('aria-label') || ''}"`),
+        html: c.outerHTML.slice(0, 900)
+      }))
+    };
+
+    try {
+      const connu = await Sniffer.connu();
+      rapport.api_recherche_apprise = connu?.url || null;
+      rapport.api_panier_apprise = connu?.panier?.urlComplete || null;
+      rapport.captures_recherche = Sniffer.captures.length;
+      rapport.captures_ecriture = Sniffer.capturesPanier.length;
+      rapport.exemples_captures = Sniffer.captures.slice(-3).map(c => c.url.slice(0, 120));
+    } catch { /* Sniffer absent */ }
+
+    console.log('%c[Panier Repas] Rapport de diagnostic', 'font-weight:bold;color:#2F6B3C');
+    console.log(rapport);
+    const texte = JSON.stringify(rapport, null, 2);
+    try {
+      await navigator.clipboard.writeText(texte);
+      console.log('%c✓ Rapport copié dans le presse-papiers — colle-le dans la conversation.',
+        'color:#2F6B3C;font-weight:bold');
+    } catch {
+      console.log('Copie automatique refusée. Sélectionne et copie le texte ci-dessous :');
+      console.log(texte);
+    }
+    return rapport;
   }
 };
 
-/* Exposition explicite : les fichiers de content script partagent le même
-   monde isolé, mais on ne dépend pas de la portée lexicale de haut niveau. */
 globalThis.StoreAdapter = StoreAdapter;
 /* Alias de compatibilité avec les versions précédentes. */
 globalThis.LeclercAdapter = StoreAdapter;
