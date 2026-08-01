@@ -97,6 +97,23 @@
     const coutLigne = plan.cout
       ? `<span class="badge" title="${plan.cout.tokens.input + plan.cout.tokens.cacheEcrit + plan.cout.tokens.cacheLu} tokens en entrée, ${plan.cout.tokens.output} en sortie">${(plan.cout.usd * 100).toFixed(1)} ¢</span>`
       : '';
+    const budget = Store.getProfile().budget_hebdo_eur;
+    const coutPanier = plan.cout_panier
+      || Aggregator.estimerCout(Aggregator.buildBasket(plan, Store.getInventory(), Store.getMatches()));
+    let budgetCard = '';
+    if (coutPanier && coutPanier.total > 0) {
+      const depasse = budget > 0 && coutPanier.total > budget;
+      const part = budget > 0 ? Math.min(100, Math.round((coutPanier.total / budget) * 100)) : 0;
+      budgetCard = `<div class="card budget ${depasse ? 'warn' : 'ok'}">
+        <div class="budget-haut">
+          <b>${coutPanier.total.toFixed(2)} €</b>
+          ${budget > 0 ? `<span class="hint" style="margin:0">sur ${budget} € de budget</span>` : ''}
+        </div>
+        ${budget > 0 ? `<div class="budget-jauge"><div style="width:${part}%"></div></div>` : ''}
+        <p class="hint" style="margin:6px 0 0">${coutPanier.connus} prix relevés en magasin, ${coutPanier.estimes} estimés${
+          depasse ? ` · dépassement de ${(coutPanier.total - budget).toFixed(2)} €` : ''}</p>
+      </div>`;
+    }
     const horsCat = plan.hors_catalogue || [];
     const horsCatCard = horsCat.length
       ? `<div class="card delivery warn"><b>⚠️ ${horsCat.length} ingrédient(s) peut-être introuvable(s)</b>
@@ -165,6 +182,7 @@
     view.innerHTML = `
       <div class="section-title">Semaine du ${esc(plan.semaine.date_debut)} ${varieteBadge} ${coutLigne}</div>
       ${weightCard}
+      ${budgetCard}
       ${horsCatCard}
       <div class="seg">
         <button class="seg-btn ${semaineVue === 'tableau' ? 'on' : ''}" data-vue="tableau">Tableau</button>
@@ -264,13 +282,57 @@
           autres.map(p => `${DAY_LABELS[p.jour - 1]} ${MEAL_LABELS[p.repas] || p.repas}`).join(', ')
         }.${mode === 'repas' ? ` En le préparant d'un coup (${Math.round(totalPortions * 10) / 10} couverts au total), tu ne cuisines qu'une fois.` : ''}</p>` : ''}
 
+        <div id="rp-remplacement"></div>
         <div class="dialog-actions">
+          <button class="btn ghost" id="rp-changer">Changer ce plat</button>
           <button class="btn primary" id="rp-close">Fermer</button>
         </div>`;
 
       body.querySelectorAll('.seg-btn[data-mode]').forEach(b =>
         b.addEventListener('click', () => draw(b.dataset.mode)));
       body.querySelector('#rp-close').addEventListener('click', () => dlg.close());
+
+      body.querySelector('#rp-changer')?.addEventListener('click', () => {
+        const zone = body.querySelector('#rp-remplacement');
+        zone.innerHTML = `
+          <div class="sub-title">Changer « ${esc(r.nom)} »</div>
+          <p class="hint">Un seul plat est régénéré, le reste de la semaine ne bouge pas.</p>
+          <div class="chips">
+            <button type="button" class="chip" data-raison="ne me plaît pas">Ça ne me tente pas</button>
+            <button type="button" class="chip" data-raison="trop long à préparer">Trop long</button>
+            <button type="button" class="chip" data-raison="trop cher">Trop cher</button>
+            <button type="button" class="chip" data-raison="trop souvent vu">Déjà trop vu</button>
+          </div>
+          <label class="switch"><input type="checkbox" id="rp-bannir" checked />
+            <span>Ne plus jamais me proposer ce plat</span></label>
+          <div id="rp-etat"></div>`;
+        zone.querySelectorAll('.chip[data-raison]').forEach(chip =>
+          chip.addEventListener('click', () => lancerRemplacement(chip.dataset.raison)));
+      });
+
+      async function lancerRemplacement(raison) {
+        const etat = body.querySelector('#rp-etat');
+        const bannir = body.querySelector('#rp-bannir')?.checked;
+        etat.innerHTML = '<div class="loading">Recherche d\'un autre plat…</div>';
+        try {
+          const profile = Store.getProfile();
+          if (bannir && !profile.plats_refuses.includes(r.nom)) {
+            profile.plats_refuses = [...profile.plats_refuses, r.nom];
+            Store.setProfile(profile);
+          }
+          const res = await Generator.remplacerRecette({
+            plan: Store.getPlan(), recetteId: r.id, raison, profile,
+            onStatus: (m) => { etat.innerHTML = `<div class="loading">${esc(m)}</div>`; }
+          });
+          Store.setPlan(res.plan);
+          dlg.close();
+          renderSemaine();
+          toast(`« ${res.nouvelle.nom} » remplace « ${res.ancienne.nom} » (${(res.cout * 100).toFixed(1)} ¢)`);
+        } catch (err) {
+          console.error(err);
+          etat.innerHTML = `<p class="hint">Échec : ${esc(err.message === 'NO_API_KEY' ? 'clé API manquante' : err.message)}</p>`;
+        }
+      }
 
       body.querySelector('#btn-etapes')?.addEventListener('click', async () => {
         const zone = body.querySelector('#etapes-zone');
@@ -460,6 +522,15 @@
         ${complete ? '' : '<div class="ticket-foot">* partiel : associe les produits (lignes "?") pour un total complet</div>'}
       </div>
       <p class="hint">Touche une ligne "?" pour l'associer à un produit Leclerc. L'association est mémorisée pour toutes les semaines suivantes.</p>
+      ${(() => {
+        const r = Store.getPrix();
+        return r
+          ? `<div class="card budget ok"><div class="budget-haut"><b>💶 ${Object.keys(r.prix).length} prix relevés</b>
+               <span class="hint" style="margin:0">chez ${esc(r.enseigne)}, le ${esc(r.date.slice(0, 10))}</span></div>
+               <button class="btn ghost block" id="btn-maj-prix" style="margin-top:8px">Mettre à jour les prix</button></div>`
+          : `<div class="card"><p class="hint" style="margin:0 0 8px">Les coûts sont estimés à partir de prix de référence. Un relevé chez ton magasin les rendra exacts.</p>
+               <button class="btn ghost block" id="btn-maj-prix">💶 Relever les prix du magasin</button></div>`;
+      })()}
       <button class="btn primary block" id="btn-send-ext">Envoyer à l'extension</button>
       <div class="btn-row">
         <button class="btn ghost" id="btn-copy-export">Copier (secours)</button>
@@ -508,6 +579,41 @@
         dlg.showModal();
       });
     }
+
+    /* Ask the extension to price this week's ingredients next time the user
+       is on the store site, then fetch the result. */
+    document.getElementById('btn-maj-prix')?.addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      try {
+        await Bridge.ping();
+      } catch {
+        btn.disabled = false;
+        toast('Extension non détectée', true);
+        return;
+      }
+      try {
+        // d'abord : un relevé est-il déjà prêt côté extension ?
+        const rep = await Bridge.recupererPrix();
+        if (rep.releve && Object.keys(rep.releve.prix || {}).length) {
+          Store.setPrix(rep.releve);
+          renderPanier();
+          toast(`${Object.keys(rep.releve.prix).length} prix récupérés ✓`);
+          return;
+        }
+        // sinon : préparer la liste et renvoyer vers le site
+        const ingredients = [...new Set([
+          ...items.filter(i => i.aAcheter > 0).map(i => i.nom_canonique),
+          ...Catalogue.flat()
+        ])];
+        await Bridge.demanderReleve(ingredients);
+        toast(`${ingredients.length} ingrédients à relever — va sur le site du magasin et clique « Relever les prix »`);
+      } catch (err) {
+        toast('Échec : ' + err.message, true);
+      } finally {
+        btn.disabled = false;
+      }
+    });
 
     document.getElementById('btn-send-ext').addEventListener('click', async (e) => {
       const btn = e.currentTarget;
@@ -863,10 +969,10 @@
           <label>Poids (kg) <input class="c-poids" type="number" step="0.1" value="${c.poids_kg ?? ''}" placeholder="78" /></label>
           <label>Taille (cm) <input class="c-taille" type="number" value="${c.taille_cm ?? ''}" placeholder="178" /></label>
         </div>
-        <label>Niveau d'activité (hors sport)
+        <label>Activité au quotidien <span class="hint" style="font-weight:400">— hors sport, compté à part</span>
           <select class="c-activite">
             ${Object.entries(Health.ACTIVITES).map(([k, v]) =>
-              `<option value="${k}"${(c.activite || 'modere') === k ? ' selected' : ''}>${esc(v.label)}</option>`).join('')}
+              `<option value="${k}"${Health.migrerActivite(c.activite) === k ? ' selected' : ''}>${esc(v.label)}</option>`).join('')}
           </select>
         </label>
         ${!isMain ? `
@@ -989,6 +1095,12 @@
         <label>Préférences libres
           <textarea id="p-prefs" rows="3" placeholder="pas de poisson le lundi, j'aime les plats épicés…">${esc(p.preferences_libres || '')}</textarea>
         </label>
+        ${(p.plats_refuses || []).length ? `
+          <label style="margin-bottom:6px">Plats refusés</label>
+          <div class="chips" id="p-refuses">
+            ${p.plats_refuses.map(n => `<button type="button" class="chip banned" data-refuse="${esc(n)}" title="Réautoriser">${esc(n)} ✕</button>`).join('')}
+          </div>
+          <p class="hint">Touche pour réautoriser.</p>` : ''}
         ${banned.length ? `
           <label style="margin-bottom:6px">Ingrédients bannis (introuvables en magasin)</label>
           <div class="chips" id="p-banned">
@@ -1093,6 +1205,14 @@
       chip.setAttribute('aria-pressed', String(on));
     }));
 
+    view.querySelectorAll('.chip[data-refuse]').forEach(chip => chip.addEventListener('click', () => {
+      const maj = readProfileForm(p);
+      maj.plats_refuses = (p.plats_refuses || []).filter(n => n !== chip.dataset.refuse);
+      Store.setProfile(maj);
+      renderProfil();
+      toast('Plat réautorisé ✓');
+    }));
+
     view.querySelectorAll('.chip[data-banned]').forEach(chip => chip.addEventListener('click', () => {
       Store.setUnavailable(Store.getUnavailable().filter(b => b !== chip.dataset.banned));
       Store.setProfile(readProfileForm(p));
@@ -1156,6 +1276,7 @@
           sexe: main.sexe, activite: main.activite
         },
         cibles_auto: document.getElementById('p-auto').checked,
+        plats_refuses: base.plats_refuses || [],
         complexite: document.getElementById('p-complexite').value,
         variete: document.getElementById('p-variete').value,
         cuisines: [...view.querySelectorAll('.chip[data-cuisine].on')].map(c => c.dataset.cuisine),

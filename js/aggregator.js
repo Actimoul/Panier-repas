@@ -110,6 +110,53 @@ const Aggregator = (() => {
     return { total, complete };
   }
 
+  /* Estimated basket cost, ingredient by ingredient.
+     Real prices first (products the user has associated), reference prices
+     as a fallback. Returns { total, connus, estimes, details[] } so the UI
+     can say how much of the estimate is actually grounded. */
+  function estimerCout(items) {
+    let total = 0, connus = 0, estimes = 0;
+    const details = [];
+    const releve = (typeof Store !== 'undefined' && Store.getPrix) ? Store.getPrix() : null;
+    const prixReleves = releve?.prix || {};
+    for (const it of items) {
+      if (it.aAcheter <= 0) continue;
+      let prix = null, source = null;
+
+      const rel = prixReleves[it.nom_canonique];
+      if (typeof it.prix_estime === 'number') {
+        prix = it.prix_estime; source = 'reel';
+      } else if (rel && rel.par_kg > 0) {
+        // Prix relevé dans le magasin où l'on va commander : la meilleure source.
+        const kg = it.unite === 'piece'
+          ? (it.aAcheter * Catalogue.poidsPiece(it.nom_canonique)) / 1000
+          : it.aAcheter / 1000;
+        prix = rel.par_kg * kg;
+        source = 'reel';
+      } else if (it.match && typeof it.match.prix_eur === 'number' && it.match.pack_quantite > 0) {
+        prix = Math.ceil(it.aAcheter / it.match.pack_quantite) * it.match.prix_eur;
+        source = 'reel';
+      } else {
+        const ref = Catalogue.prixReference(it.nom_canonique);
+        if (ref !== null) {
+          // Les prix de référence sont au kilo : pour un ingrédient compté à
+          // la pièce, il faut passer par le poids typique d'une unité.
+          const kg = it.unite === 'piece'
+            ? (it.aAcheter * Catalogue.poidsPiece(it.nom_canonique)) / 1000
+            : it.aAcheter / 1000;
+          prix = ref * kg;
+          source = 'reference';
+        }
+      }
+
+      if (prix === null) continue;
+      total += prix;
+      if (source === 'reel') connus++; else estimes++;
+      details.push({ nom: it.nom_canonique, prix: Math.round(prix * 100) / 100, source });
+    }
+    return { total: Math.round(total * 100) / 100, connus, estimes, details };
+  }
+
   /* Payload consumed by the Chrome extension. When a 2nd delivery is
      recommended, at-risk items are tagged livraison 2. */
   function buildExport(items, plan, delivery, options) {
@@ -261,5 +308,5 @@ const Aggregator = (() => {
     };
   }
 
-  return { buildBasket, groupByRayon, totalEstime, buildExport, applyPurchaseToInventory, recommendDelivery, fmtQty, RAYON_LABELS };
+  return { buildBasket, groupByRayon, totalEstime, estimerCout, buildExport, applyPurchaseToInventory, recommendDelivery, fmtQty, RAYON_LABELS };
 })();

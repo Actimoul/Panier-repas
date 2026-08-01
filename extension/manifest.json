@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Panier Repas",
-  "version": "0.7.0",
+  "version": "1.0.0",
   "description": "Remplit ton panier de courses en ligne à partir de la liste générée par Panier Repas. Choisit le meilleur rapport qualité/prix et s'arrête toujours avant le paiement.",
   "permissions": [
     "storage",
@@ -36,6 +36,7 @@
         "https://*.coursesu.com/*"
       ],
       "js": [
+        "sniffer.js",
         "scoring.js",
         "adapter.js",
         "content.js"
@@ -43,7 +44,7 @@
       "css": [
         "panel.css"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     },
     {
       "matches": [

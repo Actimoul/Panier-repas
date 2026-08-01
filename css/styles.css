@@ -551,3 +551,13 @@ ul.ing-list li b { font-family: var(--font-mono); font-size: 0.84rem; white-spac
 ol.etapes { margin: 4px 0 0; padding-left: 20px; font-size: 0.88rem; line-height: 1.55; }
 ol.etapes li { margin-bottom: 6px; }
 #dlg-match .dialog-body .sub-title { border-top: 1px solid var(--line); }
+
+/* ---------- budget (v2.9) ---------- */
+.card.budget { border-left: 4px solid var(--basil); }
+.card.budget.warn { border-left-color: var(--paprika); }
+.budget-haut { display: flex; align-items: baseline; gap: 8px; }
+.budget-haut b { font-family: var(--font-display); font-size: 1.15rem; }
+.card.budget.warn .budget-haut b { color: var(--paprika); }
+.budget-jauge { height: 6px; background: var(--porcelain); border-radius: 3px; margin-top: 8px; overflow: hidden; }
+.budget-jauge > div { height: 100%; background: var(--basil); }
+.card.budget.warn .budget-jauge > div { background: var(--paprika); }

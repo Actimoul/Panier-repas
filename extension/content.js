@@ -14,8 +14,14 @@
 
   /* Rythme : un site marchand n'aime pas les rafales. Ces délais sont ce qui
      sépare un pilote discret d'un pilote qui déclenche une erreur 500. */
-  const DELAI_RECHERCHE = 3500;  // entre deux recherches
-  const DELAI_ECHEC = 8000;      // après un échec, puis ×2, ×3
+  const DELAI_RECHERCHE = 6000;  // entre deux recherches (+ variation aléatoire)
+  const DELAI_ECHEC = 12000;     // après un échec, puis ×2, ×3
+  const DELAI_API = 500;         // via l'API interne : pas de page à charger
+  const SCORE_MINIMUM = 35;      // en dessous, on ne met rien dans le panier
+
+  /* Un peu d'irrégularité : des requêtes parfaitement cadencées sont ce qui
+     ressemble le moins à une navigation humaine. */
+  const rythme = (base) => base + Math.round(Math.random() * base * 0.4);
 
   let state = null;
   let panel = null;
@@ -34,11 +40,12 @@
         creneau: data.prList.creneau || null,
         prefSante: data.prList.pref_sante ?? 0.5,
         budgetMax: data.prList.budget_max_article || null,
-        cursor: 0, log: [], choix: [],
+        cursor: 0, log: [], choix: [], aVerifier: [],
         auto: false,           // autopilot running
         awaitingResults: false,// a search navigation is in flight
         echecs: 0,             // consecutive failures → back off, then stop
-        pauseJusqua: 0         // epoch ms: don't touch the site before this
+        pauseJusqua: 0,        // epoch ms: don't touch the site before this
+        modeApi: false         // true once both endpoints are known
       };
       save();
     }
@@ -68,6 +75,8 @@
         ${enseigneLigne}
         ${creneau}
         <div class="pr-done">✅ Panier rempli — ${state.choix.length} produits, ${totalEur.toFixed(2)} €.<br>
+          ${(state.aVerifier || []).length
+            ? `<span class="pr-warn">${state.aVerifier.length} article(s) à ajouter à la main : ${state.aVerifier.join(', ')}</span><br>` : ''}
           Vérifie puis paie <b>toi-même</b>.
           <button id="pr-export" class="pr-wide">Copier les choix pour l'app</button></div>
         ${logLines}
@@ -94,6 +103,7 @@
         <button id="pr-manual">Choisir ce produit…</button>
         <button id="pr-skip">Passer</button>
       </div>
+      ${state.modeApi ? '<button id="pr-prix" class="pr-wide pr-secondaire">💶 Relever les prix du magasin</button>' : ''}
       <div id="pr-status" class="pr-status"></div>
       <div id="pr-candidates"></div>
       ${logLines}
@@ -162,6 +172,30 @@
       } catch (err) { setStatus(err.message); }
     });
 
+    panel.querySelector('#pr-prix')?.addEventListener('click', async () => {
+      const btn = panel.querySelector('#pr-prix');
+      btn.disabled = true;
+      const etatAuto = state.auto;
+      state.auto = false;
+      try {
+        const data = await chrome.storage.local.get(['prAReleverPrix']);
+        const liste = data.prAReleverPrix?.length
+          ? data.prAReleverPrix
+          : state.articles.map(a => a.nom_canonique).filter(Boolean);
+        const r = await releverPrix(liste);
+        const n = Object.keys(r.prix).length;
+        state.log.push({ ok: true, msg: `💶 ${n} prix relevés chez ${r.enseigne}` });
+        setStatus(`${n} prix relevés — récupère-les depuis l'app`);
+      } catch (err) {
+        console.error(err);
+        state.log.push({ ok: false, msg: `✗ relevé : ${err.message}` });
+      } finally {
+        state.auto = etatAuto;
+        btn.disabled = false;
+        save(); render();
+      }
+    });
+
     panel.querySelector('#pr-skip').addEventListener('click', () => {
       state.log.push({ ok: true, msg: `→ ${state.articles[state.cursor].recherche} passé` });
       state.cursor += 1;
@@ -171,6 +205,36 @@
   }
 
   /* ---------- the autopilot ---------- */
+
+  /* Endpoints learned for this domain, if any. */
+  let apiRecherche = null;
+  let apiPanier = null;
+
+  async function chargerApi() {
+    const e = await Sniffer.connu();
+    apiRecherche = e && e.url ? e : null;
+    apiPanier = e && e.panier ? e.panier : null;
+    return !!(apiRecherche && apiPanier);
+  }
+
+  /* Fast path: query the site's own JSON endpoint. No navigation, no render. */
+  async function analyseApi() {
+    const current = state.articles[state.cursor];
+    setStatus(`« ${current.recherche} » — recherche directe…`);
+    const liste = await Sniffer.chercher(apiRecherche, current.recherche);
+    const bruts = StoreAdapter.candidatsDepuisApi(liste, 8);
+    if (!bruts.length) {
+      const e = new Error(`Aucun résultat pour « ${current.recherche} »`);
+      e.sansResultat = true;
+      throw e;
+    }
+    await Scoring.enrich(bruts, (d, t) => setStatus(`Composition ${d}/${t}…`));
+    return Scoring.rank(bruts, {
+      prefSante: state.prefSante,
+      budgetMax: state.budgetMax,
+      nomCanonique: current.nom_canonique || current.recherche
+    });
+  }
 
   async function analyse() {
     const current = state.articles[state.cursor];
@@ -202,7 +266,23 @@
     const current = state.articles[state.cursor];
     try {
       setStatus('Ajout au panier…');
-      await StoreAdapter.addByIndex(choice.index, ranked);
+      if (state.modeApi && apiPanier && choice._api) {
+        const id = StoreAdapter.valeurChamp(choice._api, StoreAdapter.CHAMPS.ean)
+          || choice._api.id || choice._api.idProduit;
+        await Sniffer.ajouter(apiPanier, id, choice.packs || 1);
+      } else {
+        // Observer l'appel qui va partir : c'est ainsi qu'on apprend l'ajout direct.
+        const idProduit = choice.ean
+          || choice._card?.getAttribute?.('data-id-produit')
+          || choice._card?.getAttribute?.('data-id')
+          || choice._card?.querySelector?.('[data-id]')?.getAttribute('data-id')
+          || null;
+        if (idProduit) Sniffer.observerPanier(idProduit);
+        await StoreAdapter.addByIndex(choice.index, ranked);
+        // Premier ajout réussi par clic : c'est le moment d'apprendre l'appel
+        // panier, pendant que la requête vient de partir.
+        await apprendrePanier(choice);
+      }
       state.choix.push({
         nom_canonique: current.nom_canonique,
         libelle: choice.libelle,
@@ -218,11 +298,115 @@
     }
     state.cursor += 1;
     state.awaitingResults = false;
+    if (!state.modeApi && apiRecherche && apiPanier) {
+      state.modeApi = true;
+      state.log.push({ ok: true, msg: '⚡ mode rapide activé — plus de navigation' });
+    }
     save();
     render();
     // Ne jamais rappeler tick() en direct : on peut être appelé DEPUIS tick,
     // et le verrou `working` avalerait l'appel imbriqué. On planifie.
-    if (state.auto) scheduleTick(600);
+    if (state.auto) scheduleTick(state.modeApi ? DELAI_API : 600);
+  }
+
+  /* Price sweep: query the store's own API for a list of ingredients and
+     record the real price per kg of the best matching product for each.
+     Only possible in API mode — one page load per ingredient would take
+     twenty minutes and hammer the site. */
+  async function releverPrix(ingredients) {
+    if (!apiRecherche) throw new Error('API du site pas encore apprise');
+    const prix = {};
+    const echecs = [];
+    for (let i = 0; i < ingredients.length; i++) {
+      const nom = ingredients[i];
+      setStatus(`Relevé des prix ${i + 1}/${ingredients.length} — ${nom}`);
+      try {
+        const liste = await Sniffer.chercher(apiRecherche, nom);
+        const bruts = StoreAdapter.candidatsDepuisApi(liste, 6);
+        if (!bruts.length) { echecs.push(nom); continue; }
+        const ranked = Scoring.rank(bruts, { prefSante: state.prefSante, nomCanonique: nom });
+        const best = ranked[0];
+        if (!best || best.score < SCORE_MINIMUM) { echecs.push(nom); continue; }
+        const parKg = Scoring.unitPrice(best);
+        if (parKg > 0) {
+          prix[nom] = {
+            par_kg: Math.round(parKg * 100) / 100,
+            libelle: best.libelle,
+            prix_eur: best.prix_eur,
+            ean: best.ean || null,
+            score: best.score
+          };
+        } else {
+          echecs.push(nom);
+        }
+      } catch (err) {
+        console.warn('relevé', nom, err.message);
+        echecs.push(nom);
+      }
+      await new Promise(r => setTimeout(r, 250));
+    }
+    const releve = {
+      enseigne: StoreAdapter.enseigne()?.nom || location.hostname,
+      domaine: location.hostname,
+      date: new Date().toISOString(),
+      prix, echecs
+    };
+    await chrome.storage.local.set({ prPrix: releve });
+    return releve;
+  }
+
+  /* Threshold, fallback, add. Shared by the DOM path and the API path. */
+  async function deciderEtAjouter(ranked) {
+    const current = state.articles[state.cursor];
+    // Ne rien mettre au panier plutôt que d'y mettre n'importe quoi : un
+    // « gratin à l'ail » n'est pas de l'ail, mieux vaut le signaler.
+    const acceptables = ranked.filter(c => c.score >= SCORE_MINIMUM);
+    if (!acceptables.length) {
+      state.log.push({
+        ok: false,
+        msg: `⊘ ${current.recherche} : rien de convaincant (meilleur ${ranked[0].score}/100) — à faire à la main`
+      });
+      state.cursor += 1;
+      state.aVerifier = [...(state.aVerifier || []), current.recherche];
+      state.pauseJusqua = Date.now() + (state.modeApi ? DELAI_API : rythme(DELAI_RECHERCHE));
+      save(); render();
+      if (state.auto) scheduleTick(state.modeApi ? DELAI_API : 600);
+      return;
+    }
+    const retenu = state.modeApi
+      ? acceptables[0]
+      : (acceptables.find(c => StoreAdapter.findAddButton(c._card)) || acceptables[0]);
+    if (retenu !== ranked[0]) state.log.push({ ok: true, msg: '↓ repli sur un autre candidat' });
+    setStatus(`Retenu : ${Scoring.explain(retenu, ranked)}`);
+    renderCandidates(ranked, (c) => commit(c, ranked));
+    if (!state.modeApi) await new Promise(r => setTimeout(r, 900));
+    await commit(retenu, ranked);
+  }
+
+  async function apprendreRecherche(terme) {
+    if (apiRecherche) return;
+    const m = Sniffer.modele(terme);
+    if (!m) return;
+    await Sniffer.enregistrer(m);
+    apiRecherche = m;
+    state.log.push({ ok: true, msg: '⚡ recherche directe apprise' });
+  }
+
+  /* Learn the cart endpoint from the click we just made. */
+  async function apprendrePanier(choice) {
+    if (apiPanier) return;
+    const id = choice.ean
+      || choice._card?.getAttribute?.('data-id-produit')
+      || choice._card?.getAttribute?.('data-id')
+      || choice._card?.querySelector?.('[data-id]')?.getAttribute('data-id')
+      || null;
+    if (!id) return;
+    await new Promise(r => setTimeout(r, 400));   // laisser la requête partir
+    const m = Sniffer.modelePanier(id);
+    if (!m) return;
+    await Sniffer.enregistrerPanier(m);
+    apiPanier = m;
+    state.log.push({ ok: true, msg: '⚡ ajout direct appris — la suite ira vite' });
   }
 
   let tickTimer = null;
@@ -248,27 +432,30 @@
     working = true;
     try {
       const current = state.articles[state.cursor];
+
+      // Chemin rapide : les deux points d'entrée du site sont connus, plus
+      // aucune page à charger.
+      if (state.modeApi) {
+        const ranked = await analyseApi();
+        state.echecs = 0;
+        await deciderEtAjouter(ranked);
+        return;
+      }
+
       if (!state.awaitingResults) {
         state.awaitingResults = true;
-        state.pauseJusqua = Date.now() + DELAI_RECHERCHE;
+        state.pauseJusqua = Date.now() + rythme(DELAI_RECHERCHE);
         save();
         setStatus(`Recherche « ${current.recherche} »…`);
+        Sniffer.observer(current.recherche);
         await new Promise(r => setTimeout(r, 700));
         location.href = StoreAdapter.searchPageUrl(current.recherche);
         return; // page unloads here
       }
       const ranked = await analyse();
       state.echecs = 0;
-      // Un produit sans bouton d'ajout (rupture, fiche particulière) ne doit
-      // pas faire échouer l'article : on descend dans le classement.
-      const retenu = ranked.find(c => StoreAdapter.findAddButton(c._card)) || ranked[0];
-      if (retenu !== ranked[0]) {
-        state.log.push({ ok: true, msg: `↓ 1er choix non ajoutable, repli sur le suivant` });
-      }
-      setStatus(`Retenu : ${Scoring.explain(retenu, ranked)}`);
-      renderCandidates(ranked, (c) => commit(c, ranked));
-      await new Promise(r => setTimeout(r, 900));
-      await commit(retenu, ranked);
+      await apprendreRecherche(current.recherche);
+      await deciderEtAjouter(ranked);
     } catch (err) {
       console.error(err);
       state.awaitingResults = false;
@@ -278,7 +465,7 @@
         state.log.push({ ok: false, msg: `→ ${err.message} — passé` });
         state.cursor += 1;
         state.echecs = 0;
-        state.pauseJusqua = Date.now() + DELAI_RECHERCHE;
+        state.pauseJusqua = Date.now() + rythme(DELAI_RECHERCHE);
         save(); render();
         if (state.auto) scheduleTick(600);
         return;
@@ -315,6 +502,10 @@
     await loadState();
     if (!state) return;
     if (document.getElementById('pr-panel')) return; // déjà injecté
+
+    // Points d'entrée déjà appris pour ce site ? Alors on ira vite.
+    const pret = await chargerApi();
+    if (pret) state.modeApi = true;
 
     // Sur une page d'erreur, on met le pilote en pause avant même d'afficher
     // quoi que ce soit : inutile d'insister sur un site en difficulté.

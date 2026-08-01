@@ -88,9 +88,15 @@ const StoreAdapter = {
   pageEnErreur() {
     const txt = (document.body?.innerText || '').slice(0, 1200);
     if (this.ERREUR_RE.test(txt)) return txt.split('\n').find(l => this.ERREUR_RE.test(l))?.trim() || 'page d\'erreur';
-    // page quasi vide = souvent une erreur rendue côté serveur
-    if (txt.replace(/\s/g, '').length < 60 && !document.querySelector('img')) return 'page vide';
-    return null;
+    // Une page réellement morte : aucun texte, aucune image, aucun script,
+    // aucun élément interactif. Un squelette d'application monopage en cours
+    // de rendu a toujours au moins un script — il ne doit pas être confondu
+    // avec une panne.
+    const vide = txt.replace(/\s/g, '').length < 60
+      && !document.querySelector('img, svg')
+      && !document.querySelector('script')
+      && !document.querySelector('button, input, a[href]');
+    return vide ? 'page vide' : null;
   },
 
   /* Page de résultats sans aucun produit : ce n'est pas une panne, juste une
@@ -175,6 +181,61 @@ const StoreAdapter = {
     return best.cards;
   },
 
+  /* --- Produits venus de l'API interne du site ------------- */
+
+  /* Les champs varient d'un site à l'autre : on les devine par leur nom. */
+  CHAMPS: {
+    libelle: /^(lib|libelle|nom|name|titre|title|designation|label|productname)/i,
+    prix: /^(prix|price|amount|tarif|prixunitaire|unitprice|pricettc|prixttc)/i,
+    prixKg: /(prixkilo|prixaukilo|priceperkg|unitprice|prixunite)/i,
+    ean: /^(ean|gtin|codebarre|barcode|sku|reference|ref|id)$/i,
+    marque: /^(marque|brand)/i,
+    quantite: /^(quantite|contenance|conditionnement|packaging|weight|poids)/i
+  },
+
+  valeurChamp(obj, motif) {
+    for (const [k, v] of Object.entries(obj)) {
+      if (motif.test(k) && v !== null && v !== undefined && v !== '') return v;
+    }
+    // un niveau d'imbrication
+    for (const v of Object.values(obj)) {
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        for (const [k2, v2] of Object.entries(v)) {
+          if (motif.test(k2) && v2 !== null && v2 !== undefined && v2 !== '') return v2;
+        }
+      }
+    }
+    return null;
+  },
+
+  nombre(v) {
+    if (typeof v === 'number') return v;
+    if (typeof v === 'string') {
+      const m = v.replace(/\s/g, '').match(/(\d+(?:[.,]\d+)?)/);
+      return m ? parseFloat(m[1].replace(',', '.')) : null;
+    }
+    return null;
+  },
+
+  /* Transforme la réponse de l'API du site en candidats comparables. */
+  candidatsDepuisApi(liste, limite = 8) {
+    return liste.slice(0, limite).map((p, index) => {
+      const libelle = String(this.valeurChamp(p, this.CHAMPS.libelle) || '').trim();
+      const quantite = this.valeurChamp(p, this.CHAMPS.quantite);
+      const ean = this.valeurChamp(p, this.CHAMPS.ean);
+      return {
+        index,
+        _api: p,
+        libelle: quantite && !libelle.match(/\d/) ? `${libelle} ${quantite}` : libelle,
+        marque: this.valeurChamp(p, this.CHAMPS.marque) || null,
+        prix_eur: this.nombre(this.valeurChamp(p, this.CHAMPS.prix)),
+        prix_par_kg: this.nombre(this.valeurChamp(p, this.CHAMPS.prixKg)),
+        quantite_texte: `${libelle} ${quantite || ''}`,
+        ean: ean && /^\d{8,14}$/.test(String(ean)) ? String(ean) : null
+      };
+    }).filter(c => c.libelle && c.prix_eur);
+  },
+
   /* --- Extraction ----------------------------------------- */
 
   extractTitle(card) {
@@ -204,17 +265,49 @@ const StoreAdapter = {
     return inHtml ? inHtml[1] : null;
   },
 
+  SELECTEURS_CLIQUABLES: 'button, [role="button"], input[type="submit"], input[type="button"], a, [class*="ajout"], [class*="add"], [class*="panier"], [class*="cart"], [class*="cta"], [onclick]',
+
+  estBoutonAjout(el) {
+    const label = `${el.textContent || ''} ${el.getAttribute('title') || ''} ${el.getAttribute('aria-label') || ''} ${el.value || ''} ${el.className || ''} ${el.getAttribute('data-testid') || ''}`;
+    return this.ADD_LABEL_RE.test(label);
+  },
+
+  /* Le bouton d'ajout n'est pas toujours DANS la carte détectée : selon les
+     sites il vit dans un conteneur frère, ou n'apparaît qu'au survol. On
+     élargit la recherche à deux niveaux d'ancêtres, et on simule le survol
+     avant d'abandonner. */
   findAddButton(card) {
-    const clickables = [...card.querySelectorAll(
-      'button, [role="button"], input[type="submit"], input[type="button"], a, [class*="ajout"], [class*="add"], [class*="cta"], [onclick]'
-    )];
-    const labelled = clickables.find(b => {
-      const label = `${b.textContent || ''} ${b.getAttribute('title') || ''} ${b.getAttribute('aria-label') || ''} ${b.value || ''} ${b.className || ''}`;
-      return this.ADD_LABEL_RE.test(label);
-    });
-    if (labelled) return labelled;
-    // repli : un cliquable non-lien dans la carte est presque toujours l'ajout panier
-    return clickables.find(b => b.tagName !== 'A') || null;
+    const chercher = (racine) => {
+      const clickables = [...racine.querySelectorAll(this.SELECTEURS_CLIQUABLES)];
+      return clickables.find(b => this.estBoutonAjout(b)) || null;
+    };
+
+    let trouve = chercher(card);
+    if (trouve) return trouve;
+
+    // le bouton apparaît peut-être au survol
+    try {
+      card.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      card.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+      trouve = chercher(card);
+      if (trouve) return trouve;
+    } catch { /* ignore */ }
+
+    // remonter jusqu'à deux niveaux, sans déborder sur les cartes voisines
+    let noeud = card;
+    for (let i = 0; i < 2 && noeud.parentElement; i++) {
+      noeud = noeud.parentElement;
+      const candidats = [...noeud.querySelectorAll(this.SELECTEURS_CLIQUABLES)]
+        .filter(b => this.estBoutonAjout(b));
+      if (candidats.length === 1) return candidats[0];
+      // plusieurs cartes sous cet ancêtre : garder celui qui contient la carte
+      const propre = candidats.find(b => card.contains(b) || b.contains(card));
+      if (propre) return propre;
+    }
+
+    // dernier recours : un cliquable non-lien dans la carte
+    return [...card.querySelectorAll(this.SELECTEURS_CLIQUABLES)]
+      .find(b => b.tagName !== 'A') || null;
   },
 
   /* Récolte tous les produits de la page de résultats courante. */
@@ -245,7 +338,7 @@ const StoreAdapter = {
     const card = match?._card || this.findProductGrid()[index];
     if (!card) throw new Error(`Produit #${index + 1} introuvable`);
     const btn = this.findAddButton(card);
-    if (!btn) throw new Error('Bouton « Ajouter » non détecté sur la fiche');
+    if (!btn) throw new Error('bouton d\'ajout introuvable sur la fiche produit');
     const libelle = this.extractTitle(card);
     btn.click();
     await new Promise(r => setTimeout(r, 900));
@@ -267,7 +360,7 @@ const StoreAdapter = {
       prix: this.parsePrice(c.textContent),
       prixKg: this.parseUnitPrice(c.textContent),
       ean: this.extractEan(c),
-      bouton: !!this.findAddButton(c)
+      bouton: this.findAddButton(c)?.outerHTML?.slice(0, 90) || false
     }));
     return cards.length;
   }

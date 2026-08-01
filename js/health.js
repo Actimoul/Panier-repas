@@ -3,13 +3,25 @@ const Health = (() => {
 
   /* --- Targets from body metrics (Mifflin-St Jeor + activity + goal) --- */
 
+  /* Daily-life activity only — NOT training. Sport is counted separately
+     (sessions × intensity), so describing it here would double-count it.
+     Factors are therefore lower than the classic Harris-Benedict ladder,
+     which bundles exercise into the multiplier. */
   const ACTIVITES = {
-    sedentaire: { label: 'Sédentaire (bureau, peu de sport)', facteur: 1.2 },
-    leger: { label: 'Léger (1-2 séances/sem)', facteur: 1.375 },
-    modere: { label: 'Modéré (3-4 séances/sem)', facteur: 1.55 },
-    intense: { label: 'Intense (5-6 séances/sem)', facteur: 1.725 },
-    tres_intense: { label: 'Très intense (sport quotidien, métier physique)', facteur: 1.9 }
+    sedentaire: { label: 'Assis toute la journée (bureau, télétravail, voiture)', facteur: 1.2 },
+    peu_actif: { label: 'Un peu de marche (trajets à pied, quelques déplacements)', facteur: 1.3 },
+    actif: { label: 'Debout ou en mouvement une bonne partie du temps', facteur: 1.45 },
+    physique: { label: 'Métier physique (chantier, manutention, soins)', facteur: 1.6 },
+    tres_physique: { label: 'Métier très physique (port de charges toute la journée)', facteur: 1.75 }
   };
+
+  /* Older profiles used the exercise-based ladder; map them onto the new one. */
+  const ACTIVITES_MIGRATION = {
+    leger: 'peu_actif', modere: 'actif', intense: 'physique', tres_intense: 'tres_physique'
+  };
+  function migrerActivite(a) {
+    return ACTIVITES[a] ? a : (ACTIVITES_MIGRATION[a] || 'peu_actif');
+  }
 
   /* Goal adjustment on maintenance calories, and protein per kg bodyweight. */
   const OBJECTIF_REGLAGE = {
@@ -33,7 +45,7 @@ const Health = (() => {
     if (!(poids_kg > 0 && taille_cm > 0 && age > 0)) return null;
 
     const b = bmr({ poids_kg, taille_cm, age, sexe: sexe || 'homme' });
-    const facteur = ACTIVITES[activite]?.facteur || 1.375;
+    const facteur = ACTIVITES[migrerActivite(activite)].facteur;
     const maintenance = b * facteur;
     const reglage = OBJECTIF_REGLAGE[objectif] || OBJECTIF_REGLAGE.maintien;
     const kcal = Math.round((maintenance * (1 + reglage.kcalPct)) / 10) * 10;
@@ -60,8 +72,8 @@ const Health = (() => {
     else if (age <= 12) base = 2000;
     else if (age <= 15) base = sexe === 'femme' ? 2200 : 2500;
     else base = sexe === 'femme' ? 2300 : 2800;
-    // facteur 1.2..1.9 → modulate ±15% around the "modéré" reference (1.55)
-    return Math.round(base * (1 + (facteur - 1.55) * 0.3) / 10) * 10;
+    // facteur 1.2..1.75 → moduler autour de la référence « actif » (1.45)
+    return Math.round(base * (1 + (facteur - 1.45) * 0.35) / 10) * 10;
   }
 
   /* Daily needs for one person.
@@ -70,7 +82,7 @@ const Health = (() => {
      Returns { kcal, proteines_g, estEnfant } or null if metrics missing. */
   function besoinsPersonne(person, objectifParDefaut) {
     if (!person || !(person.age > 0)) return null;
-    const facteur = ACTIVITES[person.activite]?.facteur || 1.375;
+    const facteur = ACTIVITES[migrerActivite(person.activite)].facteur;
     const sport = person.sport || {};
     const seances = Math.max(0, Number(sport.seances_par_semaine) || 0);
     const kcalSport = Math.round(seances * (SPORT_KCAL[sport.intensite] || SPORT_KCAL.moderee) / 7);
@@ -162,5 +174,5 @@ const Health = (() => {
     return { kcal: base + delta, delta, reason, trend };
   }
 
-  return { syncWeights, weeklyTrend, adjustKcal, computeTargets, besoinsPersonne, coefficientDerive, bmr, ACTIVITES, SPORT_KCAL };
+  return { syncWeights, weeklyTrend, adjustKcal, computeTargets, besoinsPersonne, coefficientDerive, bmr, migrerActivite, ACTIVITES, SPORT_KCAL };
 })();

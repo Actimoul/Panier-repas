@@ -8,7 +8,8 @@ const Store = (() => {
     matches: 'pr.matches',        // { [nom_canonique]: { libelle, ref, pack_quantite, pack_unite, prix_eur } }
     weights: 'pr.weights',        // [{ date: 'YYYY-MM-DD', kg: number }]
     unavailable: 'pr.unavailable', // [nom_canonique] marked "introuvable en magasin"
-    slots: 'pr.slots'             // { preferes: [{ jour: 1-7, heure: 'HH:MM' }], historique: [...] }
+    slots: 'pr.slots',            // { preferes: [{ jour: 1-7, heure: 'HH:MM' }], historique: [...] }
+    prix: 'pr.prix'               // { enseigne, date, prix: { nom: { par_kg, libelle, ... } } }
   };
 
   const REPAS_TYPES = ['petit_dejeuner', 'dejeuner', 'collation', 'diner'];
@@ -47,7 +48,7 @@ const Store = (() => {
     return {
       id, nom,
       age: null, sexe: 'homme', poids_kg: null, taille_cm: null,
-      activite: 'modere',
+      activite: 'peu_actif',
       objectif: null,                     // null = suit l'objectif du foyer
       sport: { seances_par_semaine: 0, intensite: 'moderee', jours: [] },
       exclusions: [],                     // interdits (allergie, régime)
@@ -70,8 +71,9 @@ const Store = (() => {
       complexite: 'simple',
       variete: 'equilibre',   // batch | equilibre | maxi
       cuisines: [],
-      metrics: { poids_kg: null, taille_cm: null, age: null, sexe: 'homme', activite: 'modere' },
+      metrics: { poids_kg: null, taille_cm: null, age: null, sexe: 'homme', activite: 'peu_actif' },
       cibles_auto: true,
+      plats_refuses: [],      // plats explicitement rejetés, à ne plus proposer
       convives,
       presence: defaultPresence(convives)
     };
@@ -112,8 +114,9 @@ const Store = (() => {
         p.presence = defaultPresence(p.convives);
       }
       // migration: older profiles have no body metrics
+      if (!Array.isArray(p.plats_refuses)) p.plats_refuses = [];
       p.metrics = {
-        poids_kg: null, taille_cm: null, age: null, sexe: 'homme', activite: 'modere',
+        poids_kg: null, taille_cm: null, age: null, sexe: 'homme', activite: 'peu_actif',
         ...(p.metrics || {})
       };
       return p;
@@ -134,6 +137,9 @@ const Store = (() => {
 
     getSlots: () => ({ preferes: [], historique: [], ...read(KEYS.slots, {}) }),
     setSlots: (s) => write(KEYS.slots, s),
+
+    getPrix: () => read(KEYS.prix, null),
+    setPrix: (p) => write(KEYS.prix, p),
 
     getUnavailable: () => read(KEYS.unavailable, []),
     setUnavailable: (u) => write(KEYS.unavailable, u)

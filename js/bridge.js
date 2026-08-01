@@ -56,6 +56,8 @@ const Bridge = (() => {
     versionExtension: () => version,
     ping: () => ask('ping', null, 800),
     envoyerListe: (payload) => ask('load-list', payload, 2500),
-    recupererChoix: () => ask('get-choices', null, 2000)
+    recupererChoix: () => ask('get-choices', null, 2000),
+    recupererPrix: () => ask('get-prices', null, 2000),
+    demanderReleve: (ingredients) => ask('set-price-list', ingredients, 2000)
   };
 })();

@@ -484,3 +484,185 @@ n'importe quoi. Réécrite :
 Mesuré : « Gratin de courgettes, ail et fines herbes » passe de 100 à 30 de
 pertinence, « Ail violet filet 200g » reste à 100 — et gagne le classement dans
 les trois réglages du curseur prix/santé.
+
+## v2.6 — Activité quotidienne ≠ sport
+
+Le champ « Niveau d'activité » proposait « Léger (1-2 séances/sem) », « Modéré
+(3-4 séances/sem) »… alors que les séances de sport sont déjà saisies juste en
+dessous, avec leur intensité et leurs jours. Le sport était donc compté deux
+fois : une fois dans le multiplicateur, une fois dans les calories ajoutées.
+
+Le champ décrit maintenant ce qu'il devrait : **l'activité de la vie courante**.
+
+| Niveau | Facteur |
+|---|---|
+| Assis toute la journée (bureau, télétravail, voiture) | ×1,20 |
+| Un peu de marche (trajets à pied, quelques déplacements) | ×1,30 |
+| Debout ou en mouvement une bonne partie du temps | ×1,45 |
+| Métier physique (chantier, manutention, soins) | ×1,60 |
+| Métier très physique (port de charges toute la journée) | ×1,75 |
+
+Les facteurs sont plus bas que l'échelle Harris-Benedict classique, qui englobe
+l'exercice dans le multiplicateur — ici l'exercice est ajouté séparément.
+
+Les profils existants sont migrés automatiquement (`leger` → un peu de marche,
+`modere` → debout/en mouvement, etc.), sans perte de réglage.
+
+## v2.7 — Rien plutôt que n'importe quoi
+
+Deuxième passage réel : la pertinence corrigée avait bien fait tomber le
+« Gratin de courgettes, ail et fines herbes » de 55 à 17/100 — mais il finissait
+quand même dans le panier, faute de meilleur candidat sur la page.
+
+### Seuil d'acceptation
+En dessous de **35/100**, plus rien n'est ajouté. L'article est marqué « à faire
+à la main » et le récapitulatif de fin les liste : « 3 articles à ajouter à la
+main : ail, ciboulette, citron ». Un panier avec trois trous vaut mieux qu'un
+panier avec trois gratins.
+
+### Bouton d'ajout : recherche élargie
+« Bouton non détecté sur la fiche » revenait sur ciboulette, citron, concombre.
+Sur beaucoup de sites le bouton n'est pas *dans* la carte produit mais dans un
+conteneur frère, ou n'apparaît qu'au survol. La recherche remonte maintenant
+jusqu'à deux niveaux d'ancêtres — en vérifiant qu'elle ne prend pas le bouton de
+la carte voisine — et simule un survol avant d'abandonner.
+
+### Rythme encore ralenti
+Le site a renvoyé une deuxième erreur 500. Délai entre recherches porté de 3,5 s
+à **6 s, avec une variation aléatoire de ±40 %** : une cadence parfaitement
+régulière est justement ce qui ne ressemble pas à une navigation humaine. Après
+un échec : 12 s, puis 24 s, puis arrêt.
+
+Une liste de 36 articles prend désormais une dizaine de minutes. C'est le prix
+d'un site qui tient debout jusqu'au bout.
+
+## v2.8 — Mode rapide : l'API interne du site
+
+Dix minutes pour 36 articles, c'était le prix d'une navigation complète par
+ingrédient. Mais le site ne rend pas ces pages par magie : il interroge sa
+propre API JSON. Autant s'adresser directement à elle.
+
+### Apprentissage automatique
+`extension/sniffer.js` enveloppe `fetch` et `XMLHttpRequest` dès le chargement
+de la page et garde les vingt dernières réponses JSON qui ressemblent à une
+liste de produits (des objets avec un champ nom et un champ prix). Au premier
+article, traité normalement par navigation, il reconnaît :
+
+- **l'appel de recherche** — l'URL qui contenait le terme cherché ;
+- **l'appel d'ajout au panier** — l'écriture qui contenait l'identifiant du
+  produit ajouté.
+
+Les deux gabarits sont mémorisés par domaine dans `chrome.storage`. Rien ne
+sort de la machine.
+
+### Ensuite, plus aucune page
+Dès le deuxième article, le pilote interroge l'API directement : pas de
+navigation, pas de rendu, une charge dérisoire pour le site. Le délai entre
+articles tombe de 6 s à 0,5 s.
+
+Mesuré sur une boutique de test avec API réaliste : **une recherche en 16 ms**
+au lieu d'un chargement de page, trois articles cherchés, notés et ajoutés en
+**51 ms**. Le premier article reste au rythme prudent, le temps d'apprendre.
+
+### Repli intégral
+Si le site n'expose rien d'exploitable, tout continue comme avant : navigation,
+lecture du DOM, clic — avec les délais prudents et les garde-fous de la v2.7.
+Le mode rapide est un bonus, jamais une dépendance.
+
+Les noms de champs sont devinés par leur intitulé (`libelleProduit`, `prixTTC`,
+`prixAuKilo`, `idProduit`…), ce qui rend l'adaptation indépendante de l'enseigne.
+
+## v2.9 — Le budget cesse d'être une devinette
+
+Le modèle recevait une consigne « reste sous X € » sans avoir jamais vu un prix.
+Il estimait au jugé. Trois corrections.
+
+### 1. Des prix réels dans le prompt
+Le payload contient désormais `prix_au_kilo` : environ 130 ingrédients avec leur
+prix au kilo. **En premier, les prix relevés en magasin** — ceux des produits
+que l'extension a réellement choisis et que tu as importés, convertis au kilo
+depuis le format du pack. **En repli**, une table de référence
+(`Catalogue.PRIX_REFERENCE`, 122 entrées) aux ordres de grandeur d'un
+hypermarché français.
+
+Plus tu utilises l'app, plus la part de prix réels grandit et plus l'estimation
+devient juste.
+
+### 2. Poids typique d'une pièce
+Un prix au kilo appliqué à un compte donne n'importe quoi : deux têtes d'ail
+font 120 g, pas 2 kg. `Catalogue.poidsPiece()` corrige les ingrédients comptés à
+l'unité. Avant correction, l'estimation d'une semaine sortait à 115 € ; après,
+48 € — la seconde est la bonne.
+
+### 3. Contrôle après génération, pas seulement avant
+L'app recalcule le coût réel du panier produit. **Au-delà de 15 % de
+dépassement**, elle renvoie au modèle les six postes les plus chers et demande
+un patch : remplacer les recettes coûteuses par des équivalents à apport
+protéique comparable. Comme pour la variété, c'est une correction ciblée, pas
+une régénération.
+
+### Et sur l'écran Semaine
+Une carte annonce le coût estimé, une jauge le compare au budget, et la mention
+« 2 prix relevés en magasin, 16 estimés » dit honnêtement sur quoi repose le
+chiffre. En dépassement, la carte passe au rouge et affiche l'écart.
+
+## v3.0 — Les vrais prix de ton magasin
+
+La table de référence donnait des ordres de grandeur honnêtes, mais un prix de
+référence n'est pas le prix de ton Intermarché de Chaville. Maintenant l'app va
+les chercher.
+
+### Le relevé
+En mode API (donc dès que l'extension a appris les points d'entrée du site), un
+bouton **« 💶 Relever les prix du magasin »** apparaît dans le panneau. Pour
+chaque ingrédient, il interroge l'API du magasin, note les candidats avec le
+même moteur que le remplissage du panier — pertinence comprise, pour ne pas
+relever le prix des nuggets quand on demande du filet — et retient le prix au
+kilo du meilleur produit.
+
+Mesuré : **trois ingrédients en 1,3 s**. Les 130 du vocabulaire prennent une
+minute environ, une seule fois.
+
+### Trois sources, dans cet ordre
+1. **Prix relevés dans ton magasin** (`pr.prix`), horodatés et nommés — la
+   meilleure source ;
+2. **Produits que tu as associés** à la main ou via l'import des choix ;
+3. **Table de référence**, en dernier recours seulement.
+
+Cet ordre vaut pour l'estimation du panier comme pour le prompt de génération :
+le modèle planifie désormais avec les prix du magasin où tu commandes, et le
+payload précise la source (« relevés chez Intermarché le 2026-08-01 »).
+
+### Dans l'app
+Le Panier affiche l'état du relevé — « 💶 118 prix relevés chez Intermarché, le
+2026-08-01 » — avec un bouton de mise à jour. Sans relevé, un encart explique
+que les coûts sont estimés et propose d'en lancer un.
+
+Le parcours : Panier → « Relever les prix » (prépare la liste) → aller sur le
+site du magasin → « 💶 Relever les prix » dans le panneau → revenir au Panier →
+« Relever les prix » récupère le résultat.
+
+## v3.1 — Changer un plat qui ne plaît pas
+
+Régénérer toute la semaine parce qu'un seul dîner déplaît était absurde : cher,
+lent, et ça remplaçait aussi les plats qu'on voulait garder.
+
+### Un plat à la fois
+Dans la fiche d'un repas, bouton **« Changer ce plat »**. Quatre raisons
+proposées — ça ne me tente pas, trop long, trop cher, déjà trop vu — qui sont
+transmises au modèle pour orienter le remplacement.
+
+Un seul appel, une seule recette générée. Le nouveau plat doit tenir les mêmes
+contraintes : même nombre de portions, macros à ±10 %, et **priorité aux
+ingrédients déjà présents dans la semaine** pour ne pas alourdir le panier. Tous
+les créneaux occupés par l'ancien plat basculent sur le nouveau ; le reste de la
+semaine ne bouge pas d'un pouce.
+
+### Le refus est mémorisé
+Une case « Ne plus jamais me proposer ce plat », cochée par défaut, ajoute le
+plat à `plats_refuses`. Les générations suivantes reçoivent cette liste avec la
+consigne de ne le proposer ni sous le même nom ni sous une variante à peine
+renommée.
+
+La liste est visible et réversible dans le Profil, comme les ingrédients bannis :
+une touche sur un plat le réautorise.

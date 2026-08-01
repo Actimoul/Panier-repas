@@ -47,14 +47,18 @@ RÈGLES ABSOLUES :
 7. Les macros cumulées de chaque jour approchent kcal_cible_jour (±5 %) et atteignent proteines_cible_jour_g.
 8. Respecte exclusions sans exception.
 9. Si un inventaire est fourni, utilise ces ingrédients en priorité dans les premières recettes.
-10. Reste sous budget_hebdo_eur (protéines économiques si budget serré).
+10. BUDGET — tu disposes de prix réels, sers-t'en au lieu d'estimer :
+   - prix_au_kilo donne le prix en € par kilo (ou par litre) de chaque ingrédient disponible ; pour un ingrédient compté à la pièce, multiplie par le poids typique d'une unité.
+   - Additionne mentalement le coût de tes recettes et reste sous budget_hebdo_eur. Si tu dépasses, remplace les ingrédients les plus chers au kilo par des équivalents moins chers (cuisse plutôt que filet, œufs et légumineuses plutôt que viande, surgelé plutôt que frais hors saison).
+   - Renseigne le champ "cout_estime_eur" du plan avec ton estimation du coût total de la semaine. Sois honnête : ce champ est vérifié.
 11. couverts_par_repas indique le nombre de couverts (somme des coefficients des convives présents, décimal possible) pour chaque créneau jour/repas. Le planning couvre EXACTEMENT ces créneaux : aucun repas pour un créneau absent ou à 0, et planning.portions = le nombre de couverts du créneau (décimal autorisé, ex. 1.6). Les portions des recettes doivent suffire pour couvrir la somme des couverts planifiés.
 12. Les cibles kcal/protéines s'appliquent à l'adulte principal (coefficient 1). Les recettes restent familiales : les couverts partiels mangent les mêmes plats en portion réduite.
 13. DISPONIBILITÉ EN MAGASIN — règle stricte : chaque nom_canonique doit désigner un produit réellement trouvable dans un hypermarché français ordinaire. Utilise en priorité les termes exacts du bloc CATALOGUE fourni. Si une recette demande un ingrédient absent du catalogue, remplace-le par l'équivalent le plus proche qui y figure (ex. galanga → gingembre frais, mirin → vinaigre de cidre + sucre, burrata → mozzarella). N'invente jamais un produit d'épicerie spécialisée, de primeur exotique ou de marque précise.
 14. complexite fixe l'ambition technique : "express" = ≤ 20 min, peu d'étapes, une seule poêle/casserole ; "simple" = ≤ 40 min, techniques de base, jusqu'à 8 étapes ; "elabore" = ≤ 90 min, plusieurs cuissons, marinades et sauces autorisées. Respecte le plafond de temps (temps_preparation_min + temps_cuisson_min) pour CHAQUE recette.
 15. interdits_absolus : ces ingrédients ne doivent JAMAIS apparaître, sous aucune forme, même en trace ou en substitut proche (allergies et régimes). n_aime_pas : simples dégoûts — évite-les, mais un usage discret et bien intégré (fondu dans une sauce, mixé) reste toléré si nécessaire.
 16. jours_entrainement donne, par jour de la semaine, qui s'entraîne. Ces jours-là, augmente les glucides (+15 à 20 % environ) et place les repas les plus riches en protéines autour de la séance. Les jours sans entraînement, réduis légèrement les glucides à calories équivalentes.
-17. cuisines liste les styles culinaires souhaités : répartis les recettes de la semaine entre ces styles, en restant fidèle à leurs bases (assaisonnements, techniques) mais uniquement avec des ingrédients du catalogue. Si la liste est vide, varie librement.
+17. plats_deja_refuses liste des plats que l'utilisateur a explicitement rejetés. Ne les propose plus, ni sous le même nom, ni sous une variante à peine renommée du même plat.
+18. cuisines liste les styles culinaires souhaités : répartis les recettes de la semaine entre ces styles, en restant fidèle à leurs bases (assaisonnements, techniques) mais uniquement avec des ingrédients du catalogue. Si la liste est vide, varie librement.
 
 STRUCTURE ATTENDUE (types) :
 {
@@ -225,8 +229,35 @@ N'inclus dans "nouvelles_recettes" que les recettes à AJOUTER — les recettes 
 
   /* Generate the weekly plan. onStatus(msg) reports progress to the UI. */
   async function generate({ profile, inventory, dateDebut, couverts, joursSport, interdits, detestes, noteAjustement, onStatus }) {
+    inventory = inventory || [];
     const settings = Store.getSettings();
     if (!settings.apiKey) throw new Error('NO_API_KEY');
+
+    // Prix réels (produits déjà associés) d'abord, table de référence ensuite :
+    // le modèle ne doit pas estimer un budget les yeux fermés.
+    const matchesPrix = Store.getMatches();
+    const releve = Store.getPrix();
+    const prixConnus = {};
+    // 1. prix relevés dans le magasin où l'on commande — la meilleure source
+    for (const [nom, r] of Object.entries(releve?.prix || {})) {
+      if (r.par_kg > 0) prixConnus[nom] = r.par_kg;
+    }
+    // 2. produits déjà associés
+    for (const [nom, m] of Object.entries(matchesPrix)) {
+      if (prixConnus[nom] === undefined && typeof m.prix_eur === 'number' && m.pack_quantite > 0) {
+        const parKg = m.pack_unite === 'piece'
+          ? m.prix_eur / m.pack_quantite
+          : m.prix_eur / (m.pack_quantite / 1000);
+        prixConnus[nom] = Math.round(parKg * 100) / 100;
+      }
+    }
+    // 3. table de référence, en dernier recours
+    for (const nom of Catalogue.flat()) {
+      if (prixConnus[nom] === undefined) {
+        const ref = Catalogue.prixReference(nom);
+        if (ref !== null) prixConnus[nom] = ref;
+      }
+    }
 
     const v = Catalogue.VARIETES[profile.variete] || Catalogue.VARIETES.equilibre;
     const varieteCfg = {
@@ -240,11 +271,15 @@ N'inclus dans "nouvelles_recettes" que les recettes à AJOUTER — les recettes 
     const userPayload = {
       profil: profilLite,
       date_debut: dateDebut,
+      budget_hebdo_eur: profile.budget_hebdo_eur || undefined,
+      prix_au_kilo: prixConnus,
+      prix_source: releve ? `relevés chez ${releve.enseigne} le ${releve.date.slice(0, 10)}` : 'estimations de référence',
       variete: varieteCfg || undefined,
       couverts_par_repas: couverts || undefined,
       jours_entrainement: joursSport && Object.keys(joursSport).length ? joursSport : undefined,
       interdits_absolus: interdits?.length ? interdits : undefined,
       n_aime_pas: detestes?.length ? detestes : undefined,
+      plats_deja_refuses: profile.plats_refuses?.length ? profile.plats_refuses : undefined,
       note_ajustement: noteAjustement || undefined,
       inventaire: inventory.map(i => ({
         nom_canonique: i.nom_canonique, quantite: i.quantite, unite: i.unite, dlc: i.dlc || undefined
@@ -314,6 +349,32 @@ N'inclus dans "nouvelles_recettes" que les recettes à AJOUTER — les recettes 
         continue;
       }
 
+      // Contrôle du budget sur des prix réels, pas sur l'estimation du modèle.
+      const budget = profile.budget_hebdo_eur;
+      if (budget > 0 && attempt < 2) {
+        const items = Aggregator.buildBasket(plan, inventory, matches);
+        const cout = Aggregator.estimerCout(items);
+        plan.cout_panier = cout;
+        if (cout.total > budget * 1.15) {
+          onStatus?.(`Panier à ${cout.total.toFixed(0)} € pour ${budget} € — allègement…`);
+          const chers = [...cout.details].sort((a, b) => b.prix - a.prix).slice(0, 6);
+          const patch = await demanderPatch(settings, system, {
+            type: 'budget',
+            probleme: `Le panier revient à ${cout.total.toFixed(2)} € pour un budget de ${budget} €.`,
+            postes_les_plus_chers: chers.map(d => `${d.nom} : ${d.prix.toFixed(2)} €`),
+            contexte: {
+              recettes_existantes: plan.recettes.map(r => ({ id: r.id, nom: r.nom })),
+              planning_actuel: compactPlanning(plan.planning),
+              couverts_par_repas: couverts,
+              consigne: `Remplace les recettes qui portent les postes les plus chers par des équivalents moins coûteux, à apport protéique comparable. Vise ${budget} €.`
+            }
+          }, suivi);
+          plan = appliquerPatch(plan, patch);
+          text = null;
+          continue;
+        }
+      }
+
       const odd = Catalogue.suspects(plan, matches, unavailable);
       if (odd.length === 0 || attempt >= 3) {
         if (odd.length) console.warn('Ingrédients hors catalogue conservés :', odd);
@@ -361,5 +422,66 @@ Mentionne les températures et les durées quand elles comptent. N'invente pas d
     return etapes.map(String);
   }
 
-  return { generate, genererEtapes, lireUsage, estimerCout, TARIFS };
+  const SYSTEM_REMPLACER = `Tu remplaces UNE recette dans un plan de repas existant.
+Réponds UNIQUEMENT avec un JSON de la forme :
+{ "recette": { ...une seule recette au format habituel, sans "etapes"... } }
+Contraintes :
+- même nombre de portions et macros comparables (±10 % sur les calories et les protéines par portion) : elle occupe les mêmes créneaux.
+- réutilise en priorité les ingrédients déjà présents dans les autres recettes de la semaine, pour ne pas alourdir le panier.
+- respecte les interdits, les dégoûts, la complexité et les styles de cuisine demandés.
+- l'identifiant doit être nouveau et différent de tous ceux déjà utilisés.`;
+
+  /* Replace a single recipe in place. Costs one small call instead of a full
+     week: the planning slots are simply repointed to the new recipe. */
+  async function remplacerRecette({ plan, recetteId, raison, profile, onStatus }) {
+    const settings = Store.getSettings();
+    if (!settings.apiKey) throw new Error('NO_API_KEY');
+    const ancienne = plan.recettes.find(r => r.id === recetteId);
+    if (!ancienne) throw new Error('recette introuvable');
+
+    resetUsage();
+    const autres = plan.recettes.filter(r => r.id !== recetteId);
+    const ingredientsDejaLa = [...new Set(autres.flatMap(r => r.ingredients.map(i => i.nom_canonique)))];
+    const creneaux = (plan.planning || []).filter(p => p.recette_id === recetteId).length;
+
+    const demande = {
+      a_remplacer: { nom: ancienne.nom, portions: ancienne.portions, macros: ancienne.macros_par_portion },
+      raison: raison || 'ne plaît pas',
+      creneaux_occupes: creneaux,
+      ingredients_deja_dans_la_semaine: ingredientsDejaLa,
+      autres_plats_de_la_semaine: autres.map(r => r.nom),
+      profil: {
+        objectif: profile.objectif,
+        complexite: profile.complexite,
+        cuisines: profile.cuisines,
+        interdits: [...new Set(profile.convives.flatMap(c => c.exclusions || []))],
+        n_aime_pas: [...new Set([
+          ...profile.convives.flatMap(c => c.deteste || []),
+          ...(profile.plats_refuses || [])
+        ])]
+      }
+    };
+
+    onStatus?.('Recherche d\'un autre plat…');
+    const system = `${SYSTEM_REMPLACER}\n\n${Catalogue.promptBlock(Store.getMatches(), Store.getUnavailable())}`;
+    const text = await callApi(settings, [{ role: 'user', content: JSON.stringify(demande) }], system);
+    const rep = JSON.parse(stripFences(text));
+    const nouvelle = rep.recette || rep;
+    if (!nouvelle || !nouvelle.id || !Array.isArray(nouvelle.ingredients)) {
+      throw new Error('réponse inattendue');
+    }
+    if (!Array.isArray(nouvelle.etapes)) nouvelle.etapes = [];
+    if (plan.recettes.some(r => r.id === nouvelle.id)) nouvelle.id = `${nouvelle.id}-${Date.now().toString(36)}`;
+
+    const majPlan = {
+      ...plan,
+      recettes: [...autres, nouvelle],
+      planning: (plan.planning || []).map(p =>
+        p.recette_id === recetteId ? { ...p, recette_id: nouvelle.id } : p)
+    };
+    majPlan.cout = plan.cout;
+    return { plan: majPlan, nouvelle, ancienne, cout: estimerCout(lireUsage(), settings.model) };
+  }
+
+  return { generate, genererEtapes, remplacerRecette, lireUsage, estimerCout, TARIFS };
 })();

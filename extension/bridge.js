@@ -10,6 +10,12 @@
      page  → window.postMessage({ source:'panier-repas', type:'get-choices' })
      here  → reads chrome.storage.local.prState.choix   → replies 'choices'
 
+     page  → window.postMessage({ source:'panier-repas', type:'get-prices' })
+     here  → reads chrome.storage.local.prPrix     → replies 'prices'
+
+     page  → window.postMessage({ source:'panier-repas', type:'set-price-list' })
+     here  → stores the ingredients to price       → replies 'price-list-set'
+
      page  → window.postMessage({ source:'panier-repas', type:'ping' })
      here  → replies 'pong' so the app knows the extension is installed
 
@@ -50,6 +56,20 @@
         case 'get-choices': {
           const data = await chrome.storage.local.get(['prState']);
           reply('choices', { choix: data.prState?.choix || [] });
+          break;
+        }
+
+        case 'get-prices': {
+          const data = await chrome.storage.local.get(['prPrix']);
+          reply('prices', { releve: data.prPrix || null });
+          break;
+        }
+
+        /* The app tells the extension which ingredients to price next time
+           the user is on the store site. */
+        case 'set-price-list': {
+          await chrome.storage.local.set({ prAReleverPrix: msg.payload || [] });
+          reply('price-list-set', { count: (msg.payload || []).length });
           break;
         }
 
