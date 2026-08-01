@@ -78,6 +78,28 @@ const StoreAdapter = {
     return `${location.origin}/recherche?q=${encodeURIComponent(query)}`;
   },
 
+  /* --- État de la page ------------------------------------ */
+
+  /* Reconnaître une page d'erreur ou de blocage AVANT d'essayer d'y lire des
+     produits : continuer à naviguer sur un site qui renvoie des 500 ne fait
+     qu'aggraver le problème. */
+  ERREUR_RE: /\b(erreur\s*5\d\d|erreur\s*4\d\d|le serveur ne r[ée]pond pas|service (temporairement )?indisponible|trop de requ[êe]tes|acc[èe]s refus[ée]|maintenance en cours)\b/i,
+
+  pageEnErreur() {
+    const txt = (document.body?.innerText || '').slice(0, 1200);
+    if (this.ERREUR_RE.test(txt)) return txt.split('\n').find(l => this.ERREUR_RE.test(l))?.trim() || 'page d\'erreur';
+    // page quasi vide = souvent une erreur rendue côté serveur
+    if (txt.replace(/\s/g, '').length < 60 && !document.querySelector('img')) return 'page vide';
+    return null;
+  },
+
+  /* Page de résultats sans aucun produit : ce n'est pas une panne, juste une
+     recherche infructueuse — l'article doit être passé, pas retenté. */
+  aucunResultat() {
+    const txt = (document.body?.innerText || '').toLowerCase();
+    return /\b(aucun (r[ée]sultat|produit)|pas de r[ée]sultat|0 produit|rien ne correspond)\b/.test(txt);
+  },
+
   /* --- Détection générique -------------------------------- */
 
   PRICE_RE: /(\d{1,3}(?:[.,]\d{1,2}))\s*€|€\s*(\d{1,3}(?:[.,]\d{1,2}))/,

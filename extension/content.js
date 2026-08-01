@@ -12,6 +12,11 @@
   const PAYMENT_HINTS = ['paiement', 'checkout', 'commande/valider'];
   if (PAYMENT_HINTS.some(h => location.href.toLowerCase().includes(h))) return;
 
+  /* Rythme : un site marchand n'aime pas les rafales. Ces délais sont ce qui
+     sépare un pilote discret d'un pilote qui déclenche une erreur 500. */
+  const DELAI_RECHERCHE = 3500;  // entre deux recherches
+  const DELAI_ECHEC = 8000;      // après un échec, puis ×2, ×3
+
   let state = null;
   let panel = null;
   let working = false;
@@ -30,8 +35,10 @@
         prefSante: data.prList.pref_sante ?? 0.5,
         budgetMax: data.prList.budget_max_article || null,
         cursor: 0, log: [], choix: [],
-        auto: false,          // autopilot running
-        awaitingResults: false // a search navigation is in flight
+        auto: false,           // autopilot running
+        awaitingResults: false,// a search navigation is in flight
+        echecs: 0,             // consecutive failures → back off, then stop
+        pauseJusqua: 0         // epoch ms: don't touch the site before this
       };
       save();
     }
@@ -167,8 +174,17 @@
 
   async function analyse() {
     const current = state.articles[state.cursor];
+    const err = StoreAdapter.pageEnErreur();
+    if (err) { const e = new Error(`Le site répond : ${err}`); e.siteEnPanne = true; throw e; }
     const raw = StoreAdapter.harvestCandidates(8);
-    if (!raw.length) throw new Error('Aucun produit détecté sur cette page');
+    if (!raw.length) {
+      if (StoreAdapter.aucunResultat()) {
+        const e = new Error(`Aucun résultat pour « ${current.recherche} »`);
+        e.sansResultat = true;
+        throw e;
+      }
+      throw new Error('Aucun produit détecté sur cette page');
+    }
     setStatus(`${raw.length} candidats — composition…`);
     await Scoring.enrich(raw, (d, t) => setStatus(`Composition ${d}/${t}…`));
     const ranked = Scoring.rank(raw, {
@@ -220,30 +236,72 @@
   async function tick() {
     if (working || !state.auto) return;
     if (state.cursor >= state.articles.length) { state.auto = false; save(); render(); return; }
+
+    // Respecter le rythme : un site marchand n'est pas une API.
+    const attente = state.pauseJusqua - Date.now();
+    if (attente > 0) {
+      setStatus(`Pause ${Math.ceil(attente / 1000)} s pour ménager le site…`);
+      scheduleTick(attente + 200);
+      return;
+    }
+
     working = true;
     try {
       const current = state.articles[state.cursor];
       if (!state.awaitingResults) {
-        // navigate: the content script reloads on the results page and resumes
         state.awaitingResults = true;
+        state.pauseJusqua = Date.now() + DELAI_RECHERCHE;
         save();
         setStatus(`Recherche « ${current.recherche} »…`);
-        await new Promise(r => setTimeout(r, 400));
+        await new Promise(r => setTimeout(r, 700));
         location.href = StoreAdapter.searchPageUrl(current.recherche);
         return; // page unloads here
       }
       const ranked = await analyse();
-      setStatus(`Retenu : ${Scoring.explain(ranked[0], ranked)}`);
+      state.echecs = 0;
+      // Un produit sans bouton d'ajout (rupture, fiche particulière) ne doit
+      // pas faire échouer l'article : on descend dans le classement.
+      const retenu = ranked.find(c => StoreAdapter.findAddButton(c._card)) || ranked[0];
+      if (retenu !== ranked[0]) {
+        state.log.push({ ok: true, msg: `↓ 1er choix non ajoutable, repli sur le suivant` });
+      }
+      setStatus(`Retenu : ${Scoring.explain(retenu, ranked)}`);
       renderCandidates(ranked, (c) => commit(c, ranked));
-      await new Promise(r => setTimeout(r, 900)); // laisse voir le choix
-      await commit(ranked[0], ranked);
+      await new Promise(r => setTimeout(r, 900));
+      await commit(retenu, ranked);
     } catch (err) {
       console.error(err);
-      state.log.push({ ok: false, msg: `✗ ${err.message}` });
       state.awaitingResults = false;
-      state.auto = false; // stop rather than loop on a broken page
+
+      if (err.sansResultat) {
+        // pas une panne : on passe simplement l'article
+        state.log.push({ ok: false, msg: `→ ${err.message} — passé` });
+        state.cursor += 1;
+        state.echecs = 0;
+        state.pauseJusqua = Date.now() + DELAI_RECHERCHE;
+        save(); render();
+        if (state.auto) scheduleTick(600);
+        return;
+      }
+
+      state.echecs += 1;
+      state.log.push({ ok: false, msg: `✗ ${err.message}` });
+
+      if (err.siteEnPanne || state.echecs >= 3) {
+        state.auto = false;
+        const minutes = err.siteEnPanne ? 2 : 1;
+        state.pauseJusqua = Date.now() + minutes * 60000;
+        save(); render();
+        setStatus(err.siteEnPanne
+          ? `Le site est en difficulté. Pilote arrêté — attends ~${minutes} min puis relance.`
+          : 'Trois échecs d\'affilée. Pilote arrêté — reprends à la main ou relance.');
+        return;
+      }
+
+      // échec isolé : on ralentit et on retente la même recherche
+      state.pauseJusqua = Date.now() + DELAI_ECHEC * state.echecs;
       save(); render();
-      setStatus('Pilote arrêté — reprends à la main ou relance.');
+      if (state.auto) scheduleTick(DELAI_ECHEC * state.echecs);
     } finally {
       working = false;
     }
@@ -257,6 +315,17 @@
     await loadState();
     if (!state) return;
     if (document.getElementById('pr-panel')) return; // déjà injecté
+
+    // Sur une page d'erreur, on met le pilote en pause avant même d'afficher
+    // quoi que ce soit : inutile d'insister sur un site en difficulté.
+    const panne = StoreAdapter.pageEnErreur();
+    if (panne && state.auto) {
+      state.auto = false;
+      state.awaitingResults = false;
+      state.pauseJusqua = Date.now() + 120000;
+      state.log.push({ ok: false, msg: `✗ site en difficulté (${panne}) — pilote en pause` });
+      save();
+    }
     panel = document.createElement('div');
     panel.id = 'pr-panel';
     document.body.appendChild(panel);

@@ -2,6 +2,32 @@
    One automatic repair round-trip if the first output fails validation. */
 const Generator = (() => {
   const API_URL = 'https://api.anthropic.com/v1/messages';
+  const MODELE_LEGER = 'claude-haiku-4-5-20251001';
+
+  /* Token accounting, cumulated across every call of a generation, so the
+     UI can tell the user what a week actually costs. */
+  const usage = { input: 0, output: 0, cacheEcrit: 0, cacheLu: 0 };
+  function resetUsage() { usage.input = usage.output = usage.cacheEcrit = usage.cacheLu = 0; }
+  function lireUsage() { return { ...usage }; }
+
+  /* Public rates, $/million tokens. Cache reads bill at 10% of input,
+     cache writes at 125%. Kept here so the estimate stays auditable. */
+  const TARIFS = {
+    'claude-sonnet-5':            { in: 2,  out: 10 },
+    'claude-sonnet-4-6':          { in: 3,  out: 15 },
+    'claude-haiku-4-5-20251001':  { in: 1,  out: 5 },
+    'claude-opus-5':              { in: 5,  out: 25 }
+  };
+
+  function estimerCout(u, modele) {
+    const t = TARIFS[modele] || TARIFS['claude-sonnet-4-6'];
+    const dollars =
+      (u.input / 1e6) * t.in +
+      (u.cacheEcrit / 1e6) * t.in * 1.25 +
+      (u.cacheLu / 1e6) * t.in * 0.1 +
+      (u.output / 1e6) * t.out;
+    return dollars;
+  }
 
   const SYSTEM_PROMPT = `Tu es un moteur de planification de repas. Tu génères un plan hebdomadaire au format JSON strict "PlanSemaine v1.0".
 
@@ -84,7 +110,7 @@ Le planning est un tableau de tableaux compacts, pas d'objets — codes de repas
 
   /* Streamed call: the UI can report progress while tokens arrive, which is
      what makes a 40 s generation feel workable instead of frozen. */
-  async function callApi(settings, messages, systemPrompt, onProgress) {
+  async function callApi(settings, messages, systemPrompt, onProgress, modele) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
     let res;
@@ -99,9 +125,12 @@ Le planning est un tableau de tableaux compacts, pas d'objets — codes de repas
           'anthropic-dangerous-direct-browser-access': 'true'
         },
         body: JSON.stringify({
-          model: settings.model,
+          model: modele || settings.model,
           max_tokens: 16000,
-          system: systemPrompt,
+          // Le prompt système (règles + catalogue) est identique d'un appel à
+          // l'autre : le mettre en cache évite de le refacturer plein tarif à
+          // chaque tour de correction.
+          system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
           stream: true,
           messages
         })
@@ -138,8 +167,13 @@ Le planning est un tableau de tableaux compacts, pas d'objets — codes de repas
           if (ev.type === 'content_block_delta' && ev.delta?.text) {
             text += ev.delta.text;
             onProgress?.(text);
-          } else if (ev.type === 'message_delta' && ev.delta?.stop_reason) {
-            stopReason = ev.delta.stop_reason;
+          } else if (ev.type === 'message_start' && ev.message?.usage) {
+            usage.input += ev.message.usage.input_tokens || 0;
+            usage.cacheEcrit += ev.message.usage.cache_creation_input_tokens || 0;
+            usage.cacheLu += ev.message.usage.cache_read_input_tokens || 0;
+          } else if (ev.type === 'message_delta') {
+            if (ev.delta?.stop_reason) stopReason = ev.delta.stop_reason;
+            if (ev.usage?.output_tokens) usage.output += ev.usage.output_tokens;
           } else if (ev.type === 'error') {
             throw new Error(ev.error?.message || 'Erreur de flux');
           }
@@ -154,6 +188,39 @@ Le planning est un tableau de tableaux compacts, pas d'objets — codes de repas
       throw new Error('Réponse tronquée : réduis le nombre de repas/jour ou de convives.');
     }
     return text;
+  }
+
+  const CODE_INVERSE = { petit_dejeuner: 'pd', dejeuner: 'dej', collation: 'col', diner: 'din' };
+  function compactPlanning(planning) {
+    return (planning || []).map(p => [p.jour, CODE_INVERSE[p.repas] || p.repas, p.recette_id, p.portions]);
+  }
+
+  const SYSTEM_PATCH = `Tu corriges un plan de repas existant. Réponds UNIQUEMENT avec un JSON de la forme :
+{ "nouvelles_recettes": [ ...recettes au format habituel, sans "etapes"... ],
+  "planning": [[jour, "pd"|"dej"|"col"|"din", "r-slug", portions], ...] }
+"planning" REMPLACE intégralement l'ancien : il doit couvrir exactement les mêmes créneaux qu'avant.
+N'inclus dans "nouvelles_recettes" que les recettes à AJOUTER — les recettes existantes conservées sont référencées par leur id dans le planning, ne les réémets pas.`;
+
+  /* Ask for a delta instead of a full re-emission: the model keeps the good
+     recipes and returns only what changes. */
+  async function demanderPatch(settings, system, demande, onProgress) {
+    const text = await callApi(settings,
+      [{ role: 'user', content: JSON.stringify(demande) }],
+      `${SYSTEM_PATCH}\n\n${system}`, onProgress);
+    return JSON.parse(stripFences(text));
+  }
+
+  function appliquerPatch(plan, patch) {
+    const ajouts = Array.isArray(patch.nouvelles_recettes) ? patch.nouvelles_recettes : [];
+    const parId = new Map(plan.recettes.map(r => [r.id, r]));
+    for (const r of ajouts) parId.set(r.id, r);
+    const fusion = { ...plan, recettes: [...parId.values()] };
+    if (Array.isArray(patch.planning) && patch.planning.length) fusion.planning = patch.planning;
+    const norme = normalise(fusion);
+    // écarter les recettes devenues orphelines
+    const utilisees = new Set(norme.planning.map(p => p.recette_id));
+    norme.recettes = norme.recettes.filter(r => utilisees.has(r.id));
+    return norme;
   }
 
   /* Generate the weekly plan. onStatus(msg) reports progress to the UI. */
@@ -190,6 +257,7 @@ Le planning est un tableau de tableaux compacts, pas d'objets — codes de repas
     const unavailable = Store.getUnavailable();
     const system = `${SYSTEM_PROMPT}\n\n${Catalogue.promptBlock(matches, unavailable)}`;
 
+    resetUsage();
     const messages = [{ role: 'user', content: JSON.stringify(userPayload) }];
     const suivi = (partial) => {
       const n = compteRecettes(partial);
@@ -201,10 +269,12 @@ Le planning est un tableau de tableaux compacts, pas d'objets — codes de repas
     let plan = null;
     // Round 1-2: schema validity. Round 3: catalogue realism.
     for (let attempt = 0; attempt < 4; attempt++) {
-      try {
-        plan = normalise(JSON.parse(stripFences(text)));
-      } catch (err) {
-        plan = null;
+      if (text !== null) {
+        try {
+          plan = normalise(JSON.parse(stripFences(text)));
+        } catch (err) {
+          plan = null;
+        }
       }
       const check = plan ? PlanSchema.validate(plan) : { valid: false, errors: ['invalid JSON'] };
 
@@ -226,12 +296,21 @@ Le planning est un tableau de tableaux compacts, pas d'objets — codes de repas
       const varAudit = PlanSchema.auditVariete(plan, varieteCfg.max_repetitions);
       if (!varAudit.ok && attempt < 2) {
         onStatus?.('Diversification des menus…');
-        messages.push({ role: 'assistant', content: text });
-        messages.push({
-          role: 'user',
-          content: `Le plan est trop répétitif : ${varAudit.problemes.slice(0, 6).join(' ; ')}. Ajoute des recettes distinctes (${varieteCfg.recettes_min} à ${varieteCfg.recettes_max} au total) en réutilisant les ingrédients déjà achetés dans de NOUVELLES recettes plutôt qu'en répétant les mêmes plats. Renvoie le JSON complet corrigé, uniquement le JSON.`
-        });
-        text = await callApi(settings, messages, system, suivi);
+        // Correction ciblée : on ne redemande QUE les recettes manquantes et le
+        // planning, pas les 10 recettes déjà bonnes. Divise le coût du tour
+        // par trois environ.
+        const patch = await demanderPatch(settings, system, {
+          type: 'variete',
+          probleme: varAudit.problemes.slice(0, 6).join(' ; '),
+          contexte: {
+            recettes_existantes: plan.recettes.map(r => ({ id: r.id, nom: r.nom })),
+            planning_actuel: compactPlanning(plan.planning),
+            couverts_par_repas: couverts,
+            cible: `${varieteCfg.recettes_min} à ${varieteCfg.recettes_max} recettes distinctes, ${varieteCfg.max_repetitions} répétitions maximum par plat principal`
+          }
+        }, suivi);
+        plan = appliquerPatch(plan, patch);
+        text = null;   // plan déjà en mémoire, rien à reparser
         continue;
       }
 
@@ -239,6 +318,11 @@ Le planning est un tableau de tableaux compacts, pas d'objets — codes de repas
       if (odd.length === 0 || attempt >= 3) {
         if (odd.length) console.warn('Ingrédients hors catalogue conservés :', odd);
         plan.hors_catalogue = odd.length ? odd : undefined;
+        plan.cout = {
+          usd: Math.round(estimerCout(usage, settings.model) * 10000) / 10000,
+          tokens: lireUsage(),
+          modele: settings.model
+        };
         return plan;
       }
       onStatus?.('Ajustement au catalogue…');
@@ -269,11 +353,13 @@ Mentionne les températures et les durées quand elles comptent. N'invente pas d
       temps_cuisson_min: recette.temps_cuisson_min,
       ingredients: recette.ingredients.map(i => `${i.nom_canonique} ${i.quantite} ${i.unite}`)
     };
-    const text = await callApi(settings, [{ role: 'user', content: JSON.stringify(payload) }], SYSTEM_ETAPES);
+    // Rédiger 4 phrases ne demande pas le gros modèle.
+    const text = await callApi(settings, [{ role: 'user', content: JSON.stringify(payload) }],
+      SYSTEM_ETAPES, null, MODELE_LEGER);
     const etapes = JSON.parse(stripFences(text));
     if (!Array.isArray(etapes) || !etapes.length) throw new Error('Étapes illisibles');
     return etapes.map(String);
   }
 
-  return { generate, genererEtapes };
+  return { generate, genererEtapes, lireUsage, estimerCout, TARIFS };
 })();

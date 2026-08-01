@@ -415,3 +415,72 @@ l'import manuel refait surface tout seul.
 **Note d'installation** : le pont exige de recharger l'extension
 (`chrome://extensions` → ↻) après mise à jour, car un content script sur une
 nouvelle origine ne s'active pas à chaud.
+
+## v2.4 — Coût divisé par trois
+
+Une génération coûtait jusqu'à 12 centimes quand elle déclenchait deux tours de
+correction, parce que chaque tour renvoyait toute la conversation — catalogue de
+200 ingrédients compris — et redemandait le plan complet. Quatre corrections.
+
+### 1. Mise en cache du prompt système
+Les règles et le catalogue (~3000 tokens) sont identiques d'un appel à l'autre.
+Marqués `cache_control: ephemeral`, ils sont facturés 10 % du tarif d'entrée sur
+tous les appels suivants au lieu du plein tarif.
+
+### 2. Correction ciblée au lieu de régénération
+Quand l'audit de variété échoue, l'app ne redemande plus les 10 recettes : elle
+envoie la liste des recettes existantes (id + nom seulement) et réclame un
+**patch** — les recettes à ajouter et le nouveau planning. La fusion se fait
+localement, et les recettes devenues orphelines sont écartées. Sortie divisée
+par trois sur ces tours.
+
+### 3. Modèle léger pour les étapes
+Rédiger quatre phrases de préparation ne demande pas le gros modèle : les étapes
+passent sur Haiku 4.5, trois fois moins cher, sans différence perceptible.
+
+### 4. Coût visible
+Le sélecteur de modèle annonce l'ordre de grandeur par semaine générée, et
+chaque plan affiche son coût réel en centimes (badge sur l'écran Semaine, calculé
+depuis les tokens réellement facturés, cache compris).
+
+### Mesures
+| Cas | Avant | Après |
+|---|---|---|
+| Génération propre | 3,7 ¢ | 2,6 ¢ |
+| Avec 2 corrections | 12,5 ¢ | 4,0 ¢ |
+| Étapes d'une recette | 0,32 ¢ | 0,11 ¢ |
+
+Usage courant — une semaine par semaine plus une vingtaine de recettes
+ouvertes — : **environ 18 centimes par mois**. Sur Haiku pour tout, environ le
+tiers.
+
+## v2.5 — Le pilote ménage le site, et ne prend plus une tarte pour un citron
+
+Deux défauts révélés par le premier vrai passage sur Intermarché.
+
+### Erreur 500 : le pilote allait trop vite
+Il enchaînait les recherches sans respirer, le site a fini par ne plus répondre.
+Corrections :
+- **3,5 s entre deux recherches** au minimum, au lieu de 0,6 s.
+- **Reconnaissance des pages d'erreur** (« le serveur ne répond pas », erreur 5xx,
+  page vide) : le pilote s'arrête net et impose deux minutes de pause, au lieu
+  d'insister.
+- **Temporisation progressive** : après un échec, 8 s ; deuxième, 16 s ;
+  troisième, arrêt. Fini les boucles d'échec.
+- **« Aucun résultat » n'est plus une panne** : l'article est simplement passé.
+- **Repli sur le candidat suivant** quand le premier n'a pas de bouton d'ajout
+  (rupture, fiche particulière) au lieu d'échouer sur l'article.
+
+### « Gratin de courgettes, ail et fines herbes » retenu pour « ail »
+La pertinence cherchait ses mots-clés en sous-chaîne : « ail » se trouvait dans
+n'importe quoi. Réécrite :
+- **Correspondance par mots entiers**, avec tolérance aux pluriels et aux
+  racines, jamais en sous-chaîne.
+- **Détection des plats préparés** (tarte, gratin, quiche, soupe, sauce, jus,
+  compote, dessert…) : −70 points quand l'ingrédient demandé est brut. Une tarte
+  au citron n'est pas un citron.
+- **Le mot principal doit être présent** : −40 sinon.
+
+Mesuré : « Gratin de courgettes, ail et fines herbes » passe de 100 à 30 de
+pertinence, « Ail violet filet 200g » reste à 100 — et gagne le classement dans
+les trois réglages du curseur prix/santé.

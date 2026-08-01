@@ -94,6 +94,9 @@
         <span class="hint" style="margin:0">${esc(last.date)}${trendTxt}</span></div>`;
     })();
 
+    const coutLigne = plan.cout
+      ? `<span class="badge" title="${plan.cout.tokens.input + plan.cout.tokens.cacheEcrit + plan.cout.tokens.cacheLu} tokens en entrée, ${plan.cout.tokens.output} en sortie">${(plan.cout.usd * 100).toFixed(1)} ¢</span>`
+      : '';
     const horsCat = plan.hors_catalogue || [];
     const horsCatCard = horsCat.length
       ? `<div class="card delivery warn"><b>⚠️ ${horsCat.length} ingrédient(s) peut-être introuvable(s)</b>
@@ -160,7 +163,7 @@
     }).join('');
 
     view.innerHTML = `
-      <div class="section-title">Semaine du ${esc(plan.semaine.date_debut)} ${varieteBadge}</div>
+      <div class="section-title">Semaine du ${esc(plan.semaine.date_debut)} ${varieteBadge} ${coutLigne}</div>
       ${weightCard}
       ${horsCatCard}
       <div class="seg">
@@ -379,7 +382,7 @@
         onStatus: (msg) => { const el = statusEl(); if (el) el.textContent = msg; }
       });
       Store.setPlan(plan);
-      toast('Plan généré ✓');
+      toast(plan.cout ? `Plan généré ✓ (${(plan.cout.usd * 100).toFixed(1)} centimes)` : 'Plan généré ✓');
     } catch (err) {
       console.error('Generation failed:', err);
       toast(err.message === 'NO_API_KEY' ? 'Clé API manquante' : `Échec génération : ${err.message}`, true);
@@ -1187,6 +1190,18 @@
     document.getElementById('set-pref-label').textContent = PREF_LABELS[v] || '';
   }
   document.getElementById('set-pref-sante').addEventListener('input', updatePrefLabel);
+
+  /* Rough per-week estimate so the model choice is an informed one. */
+  function updateModelCout() {
+    const m = document.getElementById('set-model').value;
+    const t = Generator.TARIFS[m];
+    if (!t) { document.getElementById('set-model-cout').textContent = ''; return; }
+    // ordre de grandeur mesuré : ~5000 tokens en entrée, ~1600 en sortie
+    const usd = (5000 / 1e6) * t.in + (1600 / 1e6) * t.out;
+    document.getElementById('set-model-cout').textContent =
+      `≈ ${(usd * 100).toFixed(1)} centimes par semaine générée (${t.in}$/${t.out}$ le million de tokens).`;
+  }
+  document.getElementById('set-model').addEventListener('change', updateModelCout);
   document.getElementById('btn-settings').addEventListener('click', () => {
     const s = Store.getSettings();
     document.getElementById('set-api-key').value = s.apiKey;
@@ -1197,6 +1212,7 @@
     document.getElementById('set-pref-sante').value = s.prefSante ?? 0.5;
     document.getElementById('set-budget-article').value = s.budgetMaxArticle ?? '';
     updatePrefLabel();
+    updateModelCout();
     dlgSettings.showModal();
   });
   document.getElementById('form-settings').addEventListener('submit', (e) => {

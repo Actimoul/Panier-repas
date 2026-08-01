@@ -170,6 +170,19 @@ const Scoring = (() => {
       .filter(w => w.length > 2 && !MOTS_VIDES.has(w));
   }
 
+  /* Prepared dishes and derivatives: buying a "tarte au citron" when the
+     recipe asks for a lemon is the failure mode this catches. */
+  const PLATS_PREPARES = /\b(tarte|gratin|quiche|pizza|soupe|potage|veloute|sauce|creme|coulis|confit|compote|conserve|bocal|surimi|plat|lasagne|gnocchi|risotto|salade\s+composee|sandwich|wrap|tourte|feuillete|beignet|nugget|cordon|pane|farci|marine|fume|sirop|jus|nectar|liqueur|glace|sorbet|yaourt|dessert|biscuit|gateau|bonbon|chips|apero)\b/;
+
+  /* Word-level match: an ingredient word must appear as a WORD of the label,
+     with a tolerance for plurals and feminine endings — never as a bare
+     substring, otherwise "ail" matches "fines herbes" and "travail". */
+  function motPresent(mot, motsLabel) {
+    const racine = mot.length > 5 ? mot.slice(0, mot.length - 1) : mot;
+    return motsLabel.some(w => w === mot || w === mot + 's' || w === mot + 'x'
+      || (mot.length > 4 && (w.startsWith(racine) || mot.startsWith(w.slice(0, Math.max(4, w.length - 1))))));
+  }
+
   /* 0-100 : proportion des mots-clés de l'ingrédient retrouvés dans le
      libellé du produit. Un produit qui ne partage aucun mot-clé n'est pas
      le bon produit, quel que soit son prix. */
@@ -178,12 +191,26 @@ const Scoring = (() => {
     const mots = motsCles(nomCanonique);
     if (!mots.length) return 100;
     const label = deaccent(candidate.libelle || '');
-    const trouves = mots.filter(m => label.includes(m.slice(0, Math.max(4, m.length - 1))));
+    const motsLabel = label.split(/[^a-z0-9]+/).filter(Boolean);
+
+    const trouves = mots.filter(m => motPresent(m, motsLabel));
     let score = (trouves.length / mots.length) * 100;
-    // une forme transformée n'est pas l'ingrédient brut demandé
+
+    // Un plat préparé n'est pas l'ingrédient : une tarte au citron n'est pas
+    // un citron, un gratin à l'ail n'est pas de l'ail.
+    const demandePrepare = PLATS_PREPARES.test(deaccent(nomCanonique));
+    if (!demandePrepare && PLATS_PREPARES.test(label)) score -= 70;
+
+    // Une forme transformée n'est pas l'ingrédient brut demandé.
     const demandeBrut = /\b(filet|pave|escalope|steak|cuisse|entier|frais)\b/.test(deaccent(nomCanonique));
     const offreTransformee = /\b(panes?|nuggets?|cordons?|frites?|beignets?|marines?|farcis?)\b/.test(label);
     if (demandeBrut && offreTransformee) score -= 55;
+
+    // Le mot principal de l'ingrédient (le plus long) doit être présent :
+    // sans lui, ce n'est pas le bon rayon du tout.
+    const principal = [...mots].sort((a, b) => b.length - a.length)[0];
+    if (principal && !motPresent(principal, motsLabel)) score -= 40;
+
     return Math.max(0, Math.round(score));
   }
 
