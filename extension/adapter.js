@@ -18,37 +18,19 @@
    active est reconnue automatiquement d'après le domaine.
    ============================================================ */
 
+/* Enseignes reconnues. IMPORTANT : aucun gabarit d'URL de recherche n'est
+   déclaré ici. Deviner l'adresse de recherche d'un site est non seulement
+   inefficace — le site sert alors une page générique — mais dangereux : sur
+   Intermarché, une URL de recherche mal formée renvoie une erreur 500. La
+   recherche passe donc exclusivement par le formulaire du site, et l'accueil
+   sert de point de départ sûr. */
 const ENSEIGNES = {
-  intermarche: {
-    nom: 'Intermarché',
-    domaines: ['intermarche.com'],
-    search: (q) => `https://www.intermarche.com/recherche/${encodeURIComponent(q)}`
-  },
-  leclerc: {
-    nom: 'E.Leclerc',
-    domaines: ['leclercdrive.fr', 'e-leclerc.com'],
-    search: (q) => `${location.origin}/recherche.aspx?TexteRecherche=${encodeURIComponent(q)}`
-  },
-  carrefour: {
-    nom: 'Carrefour',
-    domaines: ['carrefour.fr'],
-    search: (q) => `https://www.carrefour.fr/s?q=${encodeURIComponent(q)}`
-  },
-  auchan: {
-    nom: 'Auchan',
-    domaines: ['auchan.fr'],
-    search: (q) => `https://www.auchan.fr/recherche?text=${encodeURIComponent(q)}`
-  },
-  houra: {
-    nom: 'Houra',
-    domaines: ['houra.fr'],
-    search: (q) => `https://www.houra.fr/recherche?q=${encodeURIComponent(q)}`
-  },
-  coursesu: {
-    nom: 'Courses U',
-    domaines: ['coursesu.com'],
-    search: (q) => `https://www.coursesu.com/recherche?text=${encodeURIComponent(q)}`
-  }
+  intermarche: { nom: 'Intermarché', domaines: ['intermarche.com'] },
+  leclerc: { nom: 'E.Leclerc', domaines: ['leclercdrive.fr', 'e-leclerc.com'] },
+  carrefour: { nom: 'Carrefour', domaines: ['carrefour.fr'] },
+  auchan: { nom: 'Auchan', domaines: ['auchan.fr'] },
+  houra: { nom: 'Houra', domaines: ['houra.fr'] },
+  coursesu: { nom: 'Courses U', domaines: ['coursesu.com'] }
 };
 
 const StoreAdapter = {
@@ -70,12 +52,16 @@ const StoreAdapter = {
     return null;
   },
 
-  /* URL de recherche — REPLI uniquement, quand le formulaire est
-     introuvable. Ces gabarits sont des suppositions et peuvent être faux. */
-  searchPageUrl(query) {
-    const e = this.enseigne();
-    if (e) return e.search(query);
-    return `${location.origin}/recherche?q=${encodeURIComponent(query)}`;
+  /* Point de départ sûr quand la page courante ne permet pas de chercher :
+     l'accueil du site, qui porte toujours la barre de recherche. On ne
+     fabrique JAMAIS d'URL de recherche — voir le commentaire d'ENSEIGNES. */
+  urlAccueil() {
+    return `${location.origin}/`;
+  },
+
+  /* Conservé pour compatibilité : renvoie l'accueil, pas une URL devinée. */
+  searchPageUrl() {
+    return this.urlAccueil();
   },
 
   /* --- Traversée profonde (shadow DOM) --------------------- */
@@ -200,17 +186,41 @@ const StoreAdapter = {
   UNIT_PRICE_RE: /(\d+(?:[.,]\d+)?)\s*€\s*\/\s*(kg|l|litre|pi[eè]ce|unit)/i,
   ADD_LABEL_RE: /ajouter|j'achète|au panier|\+\s*panier/i,
 
+  /* Le prix affiché en gros n'est pas le prix au kilo : « 13,59 €/Kg » ne
+     doit jamais être pris pour le prix du produit. On écarte donc tout
+     montant suivi d'une unité, et on garde le dernier restant — le prix de
+     vente est presque toujours en bas de carte. */
   parsePrice(text) {
     if (!text) return null;
-    const m = text.match(this.PRICE_RE);
-    if (!m) return null;
-    return parseFloat((m[1] || m[2]).replace(',', '.'));
+    const tous = [...text.matchAll(/(\d{1,3}(?:[.,]\d{1,2}))\s*€\s*(\/\s*\w+)?|€\s*(\d{1,3}(?:[.,]\d{1,2}))/g)];
+    const nus = tous.filter(m => !m[2]);
+    const choisi = nus.length ? nus[nus.length - 1] : null;
+    if (!choisi) return null;
+    return parseFloat((choisi[1] || choisi[3]).replace(',', '.'));
   },
 
+  /* « 3,29 €/Pièce » n'est PAS un prix au kilo : le confondre divise
+     l'estimation d'un panier par quatre sur les légumes vendus à l'unité.
+     On renvoie donc le montant ET son unité. */
   parseUnitPrice(text) {
     if (!text) return null;
     const m = text.match(this.UNIT_PRICE_RE);
-    return m ? parseFloat(m[1].replace(',', '.')) : null;
+    if (!m) return null;
+    const valeur = parseFloat(m[1].replace(',', '.'));
+    const u = (m[2] || '').toLowerCase();
+    const parPiece = /pi[eè]ce|unit/.test(u);
+    return { valeur, unite: parPiece ? 'piece' : (/^l|litre/.test(u) ? 'l' : 'kg'), parPiece };
+  },
+
+  /* Compatibilité : uniquement le prix au kilo ou au litre. */
+  prixAuKilo(text) {
+    const r = this.parseUnitPrice(text);
+    return r && !r.parPiece ? r.valeur : null;
+  },
+
+  prixALaPiece(text) {
+    const r = this.parseUnitPrice(text);
+    return r && r.parPiece ? r.valeur : null;
   },
 
   /* Le texte réellement affiché, shadow DOM compris : textContent s'arrête
@@ -218,7 +228,9 @@ const StoreAdapter = {
      tout le contenu est encapsulé. */
   texteVisible(el) {
     if (!el) return '';
-    let t = el.textContent || '';
+    // innerText respecte les sauts de ligne : sans lui, « Primeur<br>Ail »
+    // devient « PrimeurAil » et le mot « ail » n'est plus reconnaissable.
+    let t = (el.innerText || el.textContent || '');
     if (el.shadowRoot) t += ' ' + el.shadowRoot.textContent;
     for (const n of el.querySelectorAll ? el.querySelectorAll('*') : []) {
       if (n.shadowRoot) t += ' ' + n.shadowRoot.textContent;
@@ -264,18 +276,59 @@ const StoreAdapter = {
   },
 
   /* Repère la grille de produits de la page courante. */
-  findProductGrid() {
-    // Les prix peuvent vivre dans un shadow root : on parcourt tous les
-    // éléments, shadow DOM compris, et on garde ceux qui portent un prix.
-    const priceNodes = [];
+  /* Un prix n'est presque jamais dans un seul nœud texte : les sites le
+     découpent en « 1,36 » + « € », parfois avec les centimes en exposant.
+     On cherche donc le plus PETIT élément dont le texte rendu forme un prix
+     complet — pas la feuille du DOM, qui n'en contient qu'un morceau. */
+  noeudsPrix(limite = 80) {
+    const trouves = [];
     for (const el of this.tousLesNoeuds()) {
-      if (priceNodes.length > 60) break;
-      if (el.childElementCount !== 0) continue;
-      const t = el.textContent;
-      if (t && t.includes('€') && this.PRICE_RE.test(t) && el.offsetParent !== null) {
-        priceNodes.push(el);
-      }
+      if (trouves.length >= limite) break;
+      if (el.offsetParent === null) continue;
+      const t = (el.innerText || el.textContent || '').trim();
+      if (!t || t.length > 40 || !t.includes('€')) continue;
+      if (!this.PRICE_RE.test(t)) continue;
+      // ne garder que le plus petit conteneur : si un enfant porte déjà le
+      // prix entier, c'est lui le bon.
+      const enfantPorteur = [...el.children].some(c => {
+        const ct = (c.innerText || c.textContent || '').trim();
+        return ct.includes('€') && this.PRICE_RE.test(ct) && ct.length <= t.length;
+      });
+      if (enfantPorteur) continue;
+      trouves.push(el);
     }
+    return trouves;
+  },
+
+  /* Le prix de vente est celui affiché en bas de carte, à côté du bouton.
+     Les autres montants (prix au kilo, « à partir de », prix barré) sont
+     ailleurs. On choisit donc par la position, pas par l'ordre du texte. */
+  prixDeVente(card) {
+    const noeuds = this.chercherProfond('*', card)
+      .filter(el => {
+        const t = (el.innerText || '').trim();
+        if (!t || t.length > 40 || !t.includes('€')) return false;
+        if (/\/\s*(kg|kilo|l|litre|pi[eè]ce|unit|pers)/i.test(t)) return false;
+        if (!this.PRICE_RE.test(t)) return false;
+        return ![...el.children].some(c => {
+          const ct = (c.innerText || '').trim();
+          return ct.includes('€') && this.PRICE_RE.test(ct) && ct.length <= t.length;
+        });
+      });
+    if (!noeuds.length) return this.parsePrice(this.texteVisible(card));
+
+    let meilleur = null, plusBas = -Infinity;
+    for (const el of noeuds) {
+      try {
+        const y = el.getBoundingClientRect().top;
+        if (y > plusBas) { plusBas = y; meilleur = el; }
+      } catch { meilleur = meilleur || el; }
+    }
+    return this.parsePrice((meilleur.innerText || '').trim());
+  },
+
+  findProductGrid() {
+    const priceNodes = this.noeudsPrix();
     if (!priceNodes.length) return [];
 
     // La grille la plus fréquemment retrouvée est la bonne.
@@ -341,6 +394,7 @@ const StoreAdapter = {
         marque: this.valeurChamp(p, this.CHAMPS.marque) || null,
         prix_eur: this.nombre(this.valeurChamp(p, this.CHAMPS.prix)),
         prix_par_kg: this.nombre(this.valeurChamp(p, this.CHAMPS.prixKg)),
+        prix_par_piece: null,
         quantite_texte: `${libelle} ${quantite || ''}`,
         ean: ean && /^\d{8,14}$/.test(String(ean)) ? String(ean) : null
       };
@@ -349,29 +403,82 @@ const StoreAdapter = {
 
   /* --- Extraction ----------------------------------------- */
 
-  extractTitle(card) {
-    const heading = this.chercherProfond('h1,h2,h3,h4,a[title],img[alt]', card)[0]
-      || card.querySelector('h1,h2,h3,h4,a[title],img[alt]');
-    if (heading) {
-      const v = heading.getAttribute?.('title') || heading.getAttribute?.('alt') || heading.textContent;
-      if (v && v.trim().length > 4) return v.trim().slice(0, 120);
-    }
-    // sinon : le plus long fragment de texte qui n'est pas un prix
-    const fragments = this.tousLesNoeuds(card.shadowRoot || card)
-      .map(e => (e.childElementCount === 0 ? (e.textContent || '').trim() : ''))
-      .filter(t => t.length > 5 && !t.includes('€') && !this.ADD_LABEL_RE.test(t));
-    fragments.sort((a, b) => b.length - a.length);
-    return (fragments[0] || this.texteVisible(card).trim()).slice(0, 120);
+  /* Le titre n'est presque jamais une feuille du DOM : « Le Choix du
+     Primeur<br>Ail BLANC - CAT. 1 » contient un <br>, et une mention comme
+     « FRANCE » est une feuille bien plus courte. On note donc les candidats
+     plutôt que de prendre le plus long fragment terminal. */
+  BALISES_INLINE: new Set(['BR', 'SPAN', 'B', 'STRONG', 'EM', 'I', 'SMALL', 'MARK', 'U']),
+
+  estBlocTexte(el) {
+    return [...el.children].every(c => this.BALISES_INLINE.has(c.tagName));
   },
 
-  extractEan(card) {
-    const attrs = ['data-ean', 'data-gtin', 'data-barcode', 'data-sku', 'data-id-produit', 'data-product-id', 'data-id'];
-    for (const a of attrs) {
-      const v = card.getAttribute?.(a) || this.chercherProfond(`[${a}]`, card)[0]?.getAttribute(a);
-      if (v && /^\d{8,14}$/.test(String(v).trim())) return String(v).trim();
+  extractTitle(card) {
+    const propre = (t) => (t || '').replace(/\s+/g, ' ').trim();
+    const texte = (e) => propre(e.innerText || this.texteVisible(e));
+
+    // 1. un vrai titre, s'il existe
+    const heading = this.chercherProfond('h1,h2,h3,h4,h5', card)[0];
+    if (heading) {
+      const v = texte(heading);
+      if (v.length > 3) return v.slice(0, 120);
     }
+
+    // 2. sinon, le meilleur bloc de texte de la carte
+    const rc = card.getBoundingClientRect?.();
+    const candidats = [];
+    for (const el of this.tousLesNoeuds(card.shadowRoot || card)) {
+      if (!this.estBlocTexte(el)) continue;
+      const t = texte(el);
+      if (t.length < 4 || t.length > 140) continue;
+      if (t.includes('€')) continue;
+      if (this.ADD_LABEL_RE.test(t) || this.EXCLUS_RE.test(t)) continue;
+      if (/^(france|bio|nouveau|promo|prix|par|le|la|les)$/i.test(t)) continue;
+
+      let note = Math.min(t.length, 60);
+      if (/[a-zà-ÿ]/.test(t) && /[A-ZÀ-Ÿ]/.test(t)) note += 10;   // casse mixte
+      if (t === t.toUpperCase() && t.length < 12) note -= 20;      // mention type FRANCE
+      try {
+        const re = el.getBoundingClientRect();
+        if (rc && rc.height > 0) {
+          const haut = (re.top - rc.top) / rc.height;
+          if (haut > 0.2 && haut < 0.75) note += 15;  // sous l'image, avant le prix
+        }
+      } catch { /* ignore */ }
+      candidats.push({ t, note });
+    }
+    candidats.sort((a, b) => b.note - a.note);
+    if (candidats.length) return candidats[0].t.slice(0, 120);
+
+    // 3. repli : le texte de la carte, nettoyé
+    return propre(this.texteVisible(card)).slice(0, 120);
+  },
+
+  /* Les noms d'attributs varient d'un site à l'autre (data-ean, data-gtin,
+     data-produit-id…). Plutôt qu'une liste jamais complète, on accepte tout
+     attribut data-* dont la valeur ressemble à un identifiant produit. */
+  extractEan(card) {
+    const plausible = (v) => v && /^\d{8,14}$/.test(String(v).trim());
+
+    const scanner = (el) => {
+      if (!el.attributes) return null;
+      for (const a of el.attributes) {
+        if (!/^data-/i.test(a.name)) continue;
+        if (/price|prix|qty|quantite|index|position|count/i.test(a.name)) continue;
+        if (plausible(a.value)) return String(a.value).trim();
+      }
+      return null;
+    };
+
+    const direct = scanner(card);
+    if (direct) return direct;
+    for (const el of this.chercherProfond('*', card).slice(0, 40)) {
+      const v = scanner(el);
+      if (v) return v;
+    }
+
     const href = this.chercherProfond('a[href]', card)[0]?.getAttribute('href') || '';
-    const inHref = href.match(/\b(\d{13})\b/);
+    const inHref = href.match(/\b(\d{8,14})\b/);
     if (inHref) return inHref[1];
     const inHtml = card.innerHTML.match(/\b(\d{13})\b/);
     return inHtml ? inHtml[1] : null;
@@ -379,9 +486,50 @@ const StoreAdapter = {
 
   SELECTEURS_CLIQUABLES: 'button, [role="button"], input[type="submit"], input[type="button"], a, [class*="ajout"], [class*="add"], [class*="panier"], [class*="cart"], [class*="cta"], [onclick]',
 
+  /* Ce qui n'est JAMAIS un ajout au panier, même si le libellé contient
+     « ajouter » : la mise en favoris est le piège classique — sur beaucoup de
+     sites son intitulé est « Ajouter aux favoris ». */
+  EXCLUS_RE: /favori|wishlist|souhait|coeur|cœur|heart|comparer|partager|liste\s*de\s*course|alerte|notifier/i,
+
+  descripteur(el) {
+    return [
+      el.textContent, el.getAttribute('title'), el.getAttribute('aria-label'),
+      el.value, el.className, el.getAttribute('data-testid'), el.getAttribute('data-test'),
+      el.id, el.getAttribute('name')
+    ].filter(Boolean).join(' ');
+  },
+
+  estExclu(el) {
+    return this.EXCLUS_RE.test(this.descripteur(el));
+  },
+
   estBoutonAjout(el) {
-    const label = `${el.textContent || ''} ${el.getAttribute('title') || ''} ${el.getAttribute('aria-label') || ''} ${el.value || ''} ${el.className || ''} ${el.getAttribute('data-testid') || ''}`;
-    return this.ADD_LABEL_RE.test(label);
+    if (this.estExclu(el)) return false;
+    return this.ADD_LABEL_RE.test(this.descripteur(el));
+  },
+
+  /* Score géométrique : l'ajout au panier est en bas de carte, près du prix ;
+     les favoris et le partage sont en haut. Sans libellé exploitable — le
+     bouton n'est souvent qu'une icône — c'est la position qui tranche. */
+  scoreBouton(el, card) {
+    if (this.estExclu(el)) return -100;
+    let score = 0;
+    if (this.ADD_LABEL_RE.test(this.descripteur(el))) score += 50;
+    if (/panier|cart|basket|add-to/i.test(this.descripteur(el))) score += 30;
+    try {
+      const rc = card.getBoundingClientRect();
+      const re = el.getBoundingClientRect();
+      if (rc.height > 0) {
+        const positionRelative = (re.top + re.height / 2 - rc.top) / rc.height;
+        if (positionRelative > 0.6) score += 25;          // moitié basse
+        else if (positionRelative < 0.25) score -= 20;    // coin haut : favoris
+        if (re.right > rc.left + rc.width * 0.6) score += 5;
+      }
+    } catch { /* pas de géométrie disponible */ }
+    if (el.tagName === 'BUTTON') score += 10;
+    if (el.tagName === 'A' && el.getAttribute('href')) score -= 15;   // lien vers la fiche
+    if (el.querySelector('svg, img')) score += 5;
+    return score;
   },
 
   /* Le bouton d'ajout n'est pas toujours DANS la carte détectée : selon les
@@ -389,39 +537,38 @@ const StoreAdapter = {
      élargit la recherche à deux niveaux d'ancêtres, et on simule le survol
      avant d'abandonner. */
   findAddButton(card) {
-    const chercher = (racine) => {
-      const clickables = this.chercherProfond(this.SELECTEURS_CLIQUABLES, racine);
-      return clickables.find(b => this.estBoutonAjout(b)) || null;
+    const evaluer = (racine) => {
+      const clickables = this.chercherProfond(this.SELECTEURS_CLIQUABLES, racine)
+        .filter(el => !this.estExclu(el));
+      if (!clickables.length) return null;
+      const notes = clickables.map(el => ({ el, note: this.scoreBouton(el, card) }));
+      notes.sort((a, b) => b.note - a.note);
+      return notes[0].note > 0 ? notes[0].el : null;
     };
 
-    let trouve = chercher(card);
+    let trouve = evaluer(card);
     if (trouve) return trouve;
 
-    // le bouton apparaît peut-être au survol
+    // le bouton n'apparaît peut-être qu'au survol
     try {
       card.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
       card.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-      trouve = chercher(card);
+      trouve = evaluer(card);
       if (trouve) return trouve;
     } catch { /* ignore */ }
 
-    // remonter jusqu'à deux niveaux, sans déborder sur les cartes voisines
-    let noeud = card;
-    for (let i = 0; i < 2; i++) {
-      const suivant = this.parentTraversant(noeud);
-      if (!suivant) break;
-      noeud = suivant;
-      const candidats = this.chercherProfond(this.SELECTEURS_CLIQUABLES, noeud)
-        .filter(b => this.estBoutonAjout(b));
-      if (candidats.length === 1) return candidats[0];
-      // plusieurs cartes sous cet ancêtre : garder celui qui contient la carte
-      const propre = candidats.find(b => card.contains(b) || b.contains(card));
-      if (propre) return propre;
+    // remonter d'un niveau, sans déborder sur les cartes voisines
+    const parent = this.parentTraversant(card);
+    if (parent) {
+      const candidats = this.chercherProfond(this.SELECTEURS_CLIQUABLES, parent)
+        .filter(el => !this.estExclu(el) && (card.contains(el) || el.contains(card)));
+      if (candidats.length) {
+        const notes = candidats.map(el => ({ el, note: this.scoreBouton(el, card) }));
+        notes.sort((a, b) => b.note - a.note);
+        if (notes[0].note > 0) return notes[0].el;
+      }
     }
-
-    // dernier recours : un cliquable non-lien dans la carte
-    return this.chercherProfond(this.SELECTEURS_CLIQUABLES, card)
-      .find(b => b.tagName !== 'A') || null;
+    return null;
   },
 
   /* Récolte tous les produits de la page de résultats courante. */
@@ -434,9 +581,13 @@ const StoreAdapter = {
         _card: card,
         libelle: this.extractTitle(card),
         marque: null,
-        prix_eur: this.parsePrice(text),
-        prix_par_kg: this.parseUnitPrice(text),
-        quantite_texte: this.extractTitle(card),
+        prix_eur: this.prixDeVente(card),
+        prix_par_kg: this.prixAuKilo(text),
+        prix_par_piece: this.prixALaPiece(text),
+        // La contenance (« Le pot de 140g », « Le filet de 2 têtes ») vit
+        // sous le titre, pas dedans : lire toute la carte, sinon le prix au
+        // kilo ne peut pas être recalculé et le panier est sous-évalué.
+        quantite_texte: text,
         ean: this.extractEan(card)
       };
     }).filter(c => c.libelle && c.prix_eur);
@@ -484,13 +635,18 @@ const StoreAdapter = {
       aucun_resultat: this.aucunResultat(),
       elements_total: this.tousLesNoeuds().length,
       elements_avec_shadow: this.tousLesNoeuds().filter(n => n.shadowRoot).length,
+      noeuds_prix_reperes: this.noeudsPrix().length,
+      exemples_prix: this.noeudsPrix(6).map(e => `${e.tagName}.${(e.className||'').toString().slice(0,30)} "${(e.innerText||'').trim().slice(0,24)}"`),
       cartes_detectees: cartes.length,
       api_recherche_apprise: null,
       api_panier_apprise: null,
       cartes: cartes.slice(0, 3).map(c => ({
         titre: this.extractTitle(c),
-        prix: this.parsePrice(this.texteVisible(c)),
-        prix_kg: this.parseUnitPrice(this.texteVisible(c)),
+        prix: this.prixDeVente(c),
+        prix_brut_carte: this.parsePrice(this.texteVisible(c)),
+        texte_carte: this.texteVisible(c).replace(/\s+/g, ' ').slice(0, 200),
+        prix_kg: this.prixAuKilo(this.texteVisible(c)),
+        prix_piece: this.prixALaPiece(this.texteVisible(c)),
         ean: this.extractEan(c),
         bouton_trouve: !!this.findAddButton(c),
         bouton_html: this.findAddButton(c)?.outerHTML?.slice(0, 200) || null,

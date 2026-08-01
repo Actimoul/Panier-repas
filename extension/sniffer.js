@@ -24,24 +24,28 @@ const Sniffer = (() => {
   /* Does this payload look like a product list? We ask three questions:
      is it an array (or does it hold one), do the items have a name-ish and a
      price-ish field, and are there several of them. */
-  function trouverListeProduits(data, profondeur = 0) {
+  /* `minimum` vaut 2 pendant l'APPRENTISSAGE — deux éléments au moins pour
+     ne pas prendre n'importe quel objet pour une liste de produits — mais 1
+     à l'USAGE : une recherche pointue peut ne ramener qu'un seul produit, et
+     le rejeter reviendrait à perdre le prix de cet ingrédient. */
+  function trouverListeProduits(data, profondeur = 0, minimum = 2) {
     if (!data || profondeur > 4) return null;
     if (Array.isArray(data)) {
-      if (data.length >= 2 && data.every(x => x && typeof x === 'object')) {
+      if (data.length >= minimum && data.every(x => x && typeof x === 'object')) {
         const cles = Object.keys(data[0]).map(k => k.toLowerCase());
         const aNom = cles.some(k => /(lib|nom|name|titre|title|designation)/.test(k));
         const aPrix = cles.some(k => /(prix|price|amount|tarif)/.test(k));
         if (aNom && aPrix) return data;
       }
       for (const item of data.slice(0, 5)) {
-        const t = trouverListeProduits(item, profondeur + 1);
+        const t = trouverListeProduits(item, profondeur + 1, minimum);
         if (t) return t;
       }
       return null;
     }
     if (typeof data === 'object') {
       for (const v of Object.values(data)) {
-        const t = trouverListeProduits(v, profondeur + 1);
+        const t = trouverListeProduits(v, profondeur + 1, minimum);
         if (t) return t;
       }
     }
@@ -225,7 +229,8 @@ const Sniffer = (() => {
     const res = await fetch(url, options);
     if (!res.ok) throw new Error(`API du site : ${res.status}`);
     const data = await res.json();
-    const liste = trouverListeProduits(data);
+    // À l'usage, un seul résultat est un résultat valable.
+    const liste = trouverListeProduits(data, 0, 1);
     if (!liste) throw new Error('réponse inattendue de l\'API du site');
     return liste;
   }

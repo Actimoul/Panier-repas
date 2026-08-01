@@ -538,9 +538,9 @@
           ? `${it.packs} × ${esc(it.match.libelle)}`
           : Aggregator.fmtQty(it.aAcheter, it.unite);
         const d = prixParLigne[it.nom_canonique];
-        const price = d
+        const price = d && typeof d.prix === 'number'
           ? ` <b class="${d.source === 'reel' ? 'px-reel' : 'px-estime'}">${d.prix.toFixed(2)}€</b>`
-          : ' <span class="px-inconnu">?</span>';
+          : ' <span class="px-inconnu">prix à relever</span>';
         const l = restesParNom[it.nom_canonique];
         const reste = l && l.part >= 20 && l.reste > 0
           ? `<div class="ticket-reste">↳ ${l.packs}×${l.pack}${l.unite === 'piece' ? ' pc' : l.unite} — il restera ${l.reste}${l.unite === 'piece' ? ' pc' : l.unite}${l.coutReste ? ` (${l.coutReste.toFixed(2)}€)` : ''}</div>`
@@ -570,11 +570,17 @@
         <div class="ticket-header">${esc((Store.getSettings().enseigne || 'intermarche').toUpperCase())} · SEMAINE ${esc(plan.semaine.date_debut)}</div>
         ${lines || '<p>Rien à acheter — tout est en stock.</p>'}
         <div class="ticket-total"><span>TOTAL${cout.estimes ? ' ESTIMÉ' : ''}</span><span>${cout.total.toFixed(2)}€</span></div>
-        <div class="ticket-foot">${
-          releveActif
-            ? `${cout.connus} prix relevés chez ${esc(releveActif.enseigne)}, ${cout.estimes} estimés`
-            : `${cout.connus} prix réels, ${cout.estimes} estimés — un relevé en magasin rendrait ce total exact`
-        }</div>
+        <div class="ticket-foot">${(() => {
+          const manquants = cout.details.filter(d => d.source === 'inconnu').length;
+          if (releveActif) {
+            return `${cout.connus} prix relevés chez ${esc(releveActif.enseigne)}`
+              + (cout.estimes ? `, ${cout.estimes} estimés` : '')
+              + (manquants ? `, ${manquants} encore à relever` : '');
+          }
+          return manquants
+            ? `${manquants} prix à relever chez ton magasin`
+            : `${cout.connus} prix réels, ${cout.estimes} estimés — un relevé rendrait ce total exact`;
+        })()}</div>
       </div>
       <p class="hint">Prix en vert : relevés en magasin. En gris : estimations. Touche une ligne pour associer un produit précis.</p>
       ${(() => {
@@ -1392,6 +1398,7 @@
     document.getElementById('set-worker-url').value = s.workerUrl;
     document.getElementById('set-worker-secret').value = s.workerSecret;
     document.getElementById('set-enseigne').value = s.enseigne || 'intermarche';
+    document.getElementById('set-prix-reels').checked = !!s.prixRelevesUniquement;
     document.getElementById('set-pref-sante').value = s.prefSante ?? 0.5;
     document.getElementById('set-budget-article').value = s.budgetMaxArticle ?? '';
     updatePrefLabel();
@@ -1407,6 +1414,7 @@
           workerUrl: document.getElementById('set-worker-url').value.trim(),
           workerSecret: document.getElementById('set-worker-secret').value.trim(),
           enseigne: document.getElementById('set-enseigne').value,
+          prixRelevesUniquement: document.getElementById('set-prix-reels').checked,
           prefSante: parseFloat(document.getElementById('set-pref-sante').value),
           budgetMaxArticle: parseFloat(document.getElementById('set-budget-article').value) || null
         });

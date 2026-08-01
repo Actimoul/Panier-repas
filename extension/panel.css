@@ -70,3 +70,5 @@
 #pr-panel .pr-wide.pr-secondaire { background: #fff; color: #2F6B3C; border: 1px solid #2F6B3C; margin-top: 6px; }
 #pr-panel .pr-wide.pr-secondaire:hover { background: #F4F3EE; }
 #pr-panel .pr-note { font-size: 10.5px; color: #4B5450; background: #F4F3EE; border-radius: 6px; padding: 6px 8px; margin-top: 6px; }
+#pr-panel .pr-wide.pr-diag { background: #1C2321; color: #fff; margin-top: 8px; font-size: 11.5px; }
+#pr-panel .pr-wide.pr-diag:hover { background: #000; }

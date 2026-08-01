@@ -40,7 +40,7 @@
         creneau: data.prList.creneau || null,
         prefSante: data.prList.pref_sante ?? 0.5,
         budgetMax: data.prList.budget_max_article || null,
-        cursor: 0, log: [], choix: [], aVerifier: [],
+        cursor: 0, log: [], choix: [], aVerifier: [], essaisArticle: 0,
         auto: false,           // autopilot running
         awaitingResults: false,// a search navigation is in flight
         echecs: 0,             // consecutive failures → back off, then stop
@@ -80,6 +80,7 @@
           Vérifie puis paie <b>toi-même</b>.
           <button id="pr-export" class="pr-wide">Copier les choix pour l'app</button></div>
         ${logLines}
+        <button id="pr-diag" class="pr-wide pr-diag">🔍 Copier un diagnostic</button>
         <button id="pr-reset" class="pr-reset">Réinitialiser</button>`;
     }
 
@@ -103,12 +104,14 @@
         <button id="pr-manual">Choisir ce produit…</button>
         <button id="pr-skip">Passer</button>
       </div>
-      ${state.modeApi
-        ? '<button id="pr-prix" class="pr-wide pr-secondaire">💶 Relever tous les prix (rapide)</button>'
-        : '<div class="pr-note">💶 Les prix des produits ajoutés sont enregistrés au fil de l\'eau. Le relevé complet nécessite le mode rapide.</div>'}
+      <button id="pr-prix" class="pr-wide pr-secondaire">
+        ${state.releveEnCours ? '⏹ Arrêter le relevé' : '💶 Relever les prix du magasin'}
+      </button>
+      ${state.modeApi ? '' : '<div class="pr-note">Le relevé passe par la barre de recherche : comptez ~6 s par ingrédient.</div>'}
       <div id="pr-status" class="pr-status"></div>
       <div id="pr-candidates"></div>
       ${logLines}
+      <button id="pr-diag" class="pr-wide pr-diag">🔍 Copier un diagnostic</button>
       <button id="pr-reset" class="pr-reset">Réinitialiser</button>`;
   }
 
@@ -137,6 +140,23 @@
     panel.innerHTML = html();
 
     panel.querySelector('#pr-close').addEventListener('click', () => panel.remove());
+
+    panel.querySelector('#pr-diag')?.addEventListener('click', async () => {
+      const btn = panel.querySelector('#pr-diag');
+      btn.textContent = 'Analyse…';
+      try {
+        const r = await StoreAdapter.diagnostic();
+        r.journal = state.log.slice(-8).map(l => l.msg);
+        r.article_en_cours = state.articles[state.cursor]?.recherche || null;
+        r.progression = `${state.cursor}/${state.articles.length}`;
+        r.mode_api = state.modeApi;
+        await navigator.clipboard.writeText(JSON.stringify(r, null, 2));
+        btn.textContent = '✓ Copié — colle-le dans la conversation';
+      } catch (err) {
+        console.error(err);
+        btn.textContent = 'Voir la console (F12)';
+      }
+    });
     panel.querySelector('#pr-reset').addEventListener('click', async () => {
       await chrome.storage.local.remove(['prState']);
       state = null;
@@ -175,10 +195,16 @@
     });
 
     panel.querySelector('#pr-prix')?.addEventListener('click', async () => {
-      const btn = panel.querySelector('#pr-prix');
-      btn.disabled = true;
+      if (state.releveEnCours) {          // second clic = arrêt
+        state.releveInterrompu = true;
+        setStatus('Arrêt du relevé…');
+        return;
+      }
       const etatAuto = state.auto;
       state.auto = false;
+      state.releveEnCours = true;
+      state.releveInterrompu = false;
+      save(); render();
       try {
         const data = await chrome.storage.local.get(['prAReleverPrix']);
         const liste = data.prAReleverPrix?.length
@@ -186,14 +212,20 @@
           : state.articles.map(a => a.nom_canonique).filter(Boolean);
         const r = await releverPrix(liste);
         const n = Object.keys(r.prix).length;
-        state.log.push({ ok: true, msg: `💶 ${n} prix relevés chez ${r.enseigne}` });
-        setStatus(`${n} prix relevés — récupère-les depuis l'app`);
+        state.log.push({
+          ok: true,
+          msg: state.releveInterrompu
+            ? `💶 relevé interrompu — ${n} prix enregistrés`
+            : `💶 ${n} prix relevés chez ${r.enseigne}`
+        });
+        setStatus(`${n} prix enregistrés — récupère-les depuis l'app`);
       } catch (err) {
         console.error(err);
         state.log.push({ ok: false, msg: `✗ relevé : ${err.message}` });
       } finally {
+        state.releveEnCours = false;
+        state.releveInterrompu = false;
         state.auto = etatAuto;
-        btn.disabled = false;
         save(); render();
       }
     });
@@ -314,8 +346,10 @@
   /* Record the real price of one ingredient, from the product just chosen. */
   async function enregistrerPrix(nomCanonique, choice) {
     if (!nomCanonique) return;
-    const parKg = Scoring.unitPrice(choice);
-    if (!(parKg > 0)) return;
+    const valeur = Scoring.unitPrice(choice);
+    if (!(valeur > 0)) return;
+    // Un prix « à la pièce » ne doit jamais être rangé comme prix au kilo.
+    const aLaPiece = !(choice.prix_par_kg > 0) && choice.prix_par_piece > 0;
     const data = await chrome.storage.local.get(['prPrix']);
     const releve = data.prPrix || {
       enseigne: StoreAdapter.enseigne()?.nom || location.hostname,
@@ -324,7 +358,9 @@
       prix: {}, echecs: []
     };
     releve.prix[nomCanonique] = {
-      par_kg: Math.round(parKg * 100) / 100,
+      unite: aLaPiece ? 'piece' : 'kg',
+      par_piece: aLaPiece ? Math.round(valeur * 100) / 100 : null,
+      par_kg: aLaPiece ? null : Math.round(valeur * 100) / 100,
       libelle: choice.libelle,
       prix_eur: choice.prix_eur,
       ean: choice.ean || null,
@@ -339,45 +375,88 @@
      record the real price per kg of the best matching product for each.
      Only possible in API mode — one page load per ingredient would take
      twenty minutes and hammer the site. */
+  /* Price sweep. Two speeds, same result:
+     - API mode: one JSON call per ingredient, a few hundred milliseconds.
+     - DOM mode: the site's own search box, one ingredient at a time, at the
+       prudent pace. Slower, but it works everywhere and never adds anything
+       to the cart.
+     The sweep survives page reloads: its state lives in chrome.storage. */
   async function releverPrix(ingredients) {
-    if (!apiRecherche) throw new Error('API du site pas encore apprise');
-    const prix = {};
-    const echecs = [];
+    const data = await chrome.storage.local.get(['prPrix']);
+    const releve = data.prPrix?.domaine === location.hostname
+      ? data.prPrix
+      : {
+          enseigne: StoreAdapter.enseigne()?.nom || location.hostname,
+          domaine: location.hostname,
+          date: new Date().toISOString(),
+          prix: {}, echecs: []
+        };
+
+    const retenir = (nom, ranked) => {
+      const best = ranked[0];
+      if (!best || best.score < SCORE_MINIMUM) { releve.echecs.push(nom); return false; }
+      const valeur = Scoring.unitPrice(best);
+      if (!(valeur > 0)) { releve.echecs.push(nom); return false; }
+      const aLaPiece = !(best.prix_par_kg > 0) && best.prix_par_piece > 0;
+      releve.prix[nom] = {
+        unite: aLaPiece ? 'piece' : 'kg',
+        par_piece: aLaPiece ? Math.round(valeur * 100) / 100 : null,
+        par_kg: aLaPiece ? null : Math.round(valeur * 100) / 100,
+        libelle: best.libelle,
+        prix_eur: best.prix_eur,
+        ean: best.ean || null,
+        score: best.score
+      };
+      return true;
+    };
+
     for (let i = 0; i < ingredients.length; i++) {
       const nom = ingredients[i];
-      setStatus(`Relevé des prix ${i + 1}/${ingredients.length} — ${nom}`);
+      if (releve.prix[nom]) continue;               // déjà relevé
+      if (state.releveInterrompu) break;
+      setStatus(`Relevé ${i + 1}/${ingredients.length} — ${nom}`);
+
       try {
-        const liste = await Sniffer.chercher(apiRecherche, nom);
-        const bruts = StoreAdapter.candidatsDepuisApi(liste, 6);
-        if (!bruts.length) { echecs.push(nom); continue; }
-        const ranked = Scoring.rank(bruts, { prefSante: state.prefSante, nomCanonique: nom });
-        const best = ranked[0];
-        if (!best || best.score < SCORE_MINIMUM) { echecs.push(nom); continue; }
-        const parKg = Scoring.unitPrice(best);
-        if (parKg > 0) {
-          prix[nom] = {
-            par_kg: Math.round(parKg * 100) / 100,
-            libelle: best.libelle,
-            prix_eur: best.prix_eur,
-            ean: best.ean || null,
-            score: best.score
-          };
+        if (apiRecherche) {
+          const liste = await Sniffer.chercher(apiRecherche, nom);
+          const bruts = StoreAdapter.candidatsDepuisApi(liste, 6);
+          if (!bruts.length) { releve.echecs.push(nom); continue; }
+          retenir(nom, Scoring.rank(bruts, { prefSante: state.prefSante, nomCanonique: nom }));
+          await new Promise(r => setTimeout(r, 250));
         } else {
-          echecs.push(nom);
+          // Mode normal : on passe par la barre de recherche du site.
+          const err = StoreAdapter.pageEnErreur();
+          if (err) { const e = new Error(err); e.siteEnPanne = true; throw e; }
+          const avant = StoreAdapter.findProductGrid()
+            .slice(0, 4).map(c => StoreAdapter.extractTitle(c)).join('|');
+          Sniffer.observer(nom);
+          await StoreAdapter.rechercherViaFormulaire(nom);
+          await new Promise(r => setTimeout(r, 2600));
+          if (!document.getElementById('pr-panel')) break;   // la page a navigué
+          const bruts = StoreAdapter.harvestCandidates(6);
+          const apres = StoreAdapter.findProductGrid()
+            .slice(0, 4).map(c => StoreAdapter.extractTitle(c)).join('|');
+          if (!bruts.length || (avant && avant === apres)) { releve.echecs.push(nom); }
+          else retenir(nom, Scoring.rank(bruts, { prefSante: state.prefSante, nomCanonique: nom }));
+          await apprendreRecherche(nom);   // peut basculer en mode rapide en cours de route
+          await new Promise(r => setTimeout(r, rythme(DELAI_RECHERCHE)));
         }
       } catch (err) {
         console.warn('relevé', nom, err.message);
-        echecs.push(nom);
+        releve.echecs.push(nom);
+        if (err.siteEnPanne) {
+          releve.date = new Date().toISOString();
+          await chrome.storage.local.set({ prPrix: releve });
+          throw err;
+        }
       }
-      await new Promise(r => setTimeout(r, 250));
+
+      // sauvegarde au fil de l'eau : un relevé interrompu n'est pas perdu
+      releve.date = new Date().toISOString();
+      releve.echecs = [...new Set(releve.echecs)];
+      await chrome.storage.local.set({ prPrix: releve });
     }
-    const releve = {
-      enseigne: StoreAdapter.enseigne()?.nom || location.hostname,
-      domaine: location.hostname,
-      date: new Date().toISOString(),
-      prix, echecs
-    };
-    await chrome.storage.local.set({ prPrix: releve });
+
     return releve;
   }
 
@@ -464,6 +543,7 @@
       if (state.modeApi) {
         const ranked = await analyseApi();
         state.echecs = 0;
+        state.essaisArticle = 0;
         await deciderEtAjouter(ranked);
         return;
       }
@@ -472,31 +552,54 @@
         state.awaitingResults = true;
         state.pauseJusqua = Date.now() + rythme(DELAI_RECHERCHE);
         save();
+
+        // Sur une page d'erreur ou sans barre de recherche, on ne peut rien
+        // faire : on revient à l'accueil, qui la porte toujours. On ne
+        // fabrique jamais d'URL de recherche — c'est ce qui cassait le site.
+        if (StoreAdapter.pageEnErreur() || !StoreAdapter.champRecherche()) {
+          state.log.push({ ok: true, msg: '↩ retour à l\'accueil pour chercher' });
+          save();
+          await new Promise(r => setTimeout(r, 600));
+          location.href = StoreAdapter.urlAccueil();
+          return; // page unloads here
+        }
+
         setStatus(`Recherche « ${current.recherche} »…`);
         Sniffer.observer(current.recherche);
         await new Promise(r => setTimeout(r, 500));
 
-        // On passe par le champ de recherche du site : deviner son URL de
-        // recherche mène à une page d'accueil et à des produits au hasard.
-        const lance = await StoreAdapter.rechercherViaFormulaire(current.recherche);
-        if (lance) {
-          // le site peut répondre sans recharger (application monopage) :
-          // on laisse le rendu se faire, puis on analyse sur place.
-          await new Promise(r => setTimeout(r, 2500));
-          if (!document.getElementById('pr-panel')) return; // la page a navigué
-          const ranked = await analyse();
-          state.echecs = 0;
-          await apprendreRecherche(current.recherche);
-          await deciderEtAjouter(ranked);
+        const avant = StoreAdapter.findProductGrid()
+          .slice(0, 4).map(c => StoreAdapter.extractTitle(c)).join('|');
+
+        await StoreAdapter.rechercherViaFormulaire(current.recherche);
+        // Le site répond soit en place (application monopage), soit par une
+        // navigation qu'il choisit lui-même — dans ce cas le script se
+        // recharge et reprend au tour suivant.
+        await new Promise(r => setTimeout(r, 3000));
+        if (!document.getElementById('pr-panel')) return;
+
+        const err2 = StoreAdapter.pageEnErreur();
+        if (err2) { const e = new Error(`Le site répond : ${err2}`); e.siteEnPanne = true; throw e; }
+
+        const apres = StoreAdapter.findProductGrid()
+          .slice(0, 4).map(c => StoreAdapter.extractTitle(c)).join('|');
+        if (avant && avant === apres) {
+          state.auto = false;
+          state.awaitingResults = false;
+          state.log.push({
+            ok: false,
+            msg: `✗ la recherche « ${current.recherche} » n'a rien changé — pilote arrêté`
+          });
+          save(); render();
+          setStatus('La barre de recherche du site ne réagit pas. Copie un diagnostic.');
           return;
         }
-
-        state.log.push({ ok: false, msg: '⚠ champ de recherche introuvable — repli sur l\'URL' });
-        location.href = StoreAdapter.searchPageUrl(current.recherche);
-        return; // page unloads here
       }
+
       const ranked = await analyse();
       state.echecs = 0;
+      state.essaisArticle = 0;
+      state.awaitingResults = false;   // la recherche suivante repart du formulaire
       await apprendreRecherche(current.recherche);
       await deciderEtAjouter(ranked);
     } catch (err) {
@@ -514,24 +617,41 @@
         return;
       }
 
-      state.echecs += 1;
       state.log.push({ ok: false, msg: `✗ ${err.message}` });
 
-      if (err.siteEnPanne || state.echecs >= 3) {
+      // Une panne du site est le seul motif d'arrêt : on ne peut rien faire
+      // tant qu'il ne répond pas.
+      if (err.siteEnPanne) {
         state.auto = false;
-        const minutes = err.siteEnPanne ? 2 : 1;
-        state.pauseJusqua = Date.now() + minutes * 60000;
+        state.pauseJusqua = Date.now() + 120000;
         save(); render();
-        setStatus(err.siteEnPanne
-          ? `Le site est en difficulté. Pilote arrêté — attends ~${minutes} min puis relance.`
-          : 'Trois échecs d\'affilée. Pilote arrêté — reprends à la main ou relance.');
+        setStatus('Le site est en difficulté. Pilote arrêté — attends ~2 min puis relance.');
         return;
       }
 
-      // échec isolé : on ralentit et on retente la même recherche
-      state.pauseJusqua = Date.now() + DELAI_ECHEC * state.echecs;
+      // Sinon : deux tentatives sur le même article, puis on PASSE au
+      // suivant. Un ingrédient récalcitrant ne doit pas condamner les
+      // trente autres de la liste.
+      state.essaisArticle = (state.essaisArticle || 0) + 1;
+      if (state.essaisArticle >= 2) {
+        state.log.push({
+          ok: false,
+          msg: `⊘ ${current.recherche} : abandonné après 2 essais — à faire à la main`
+        });
+        state.aVerifier = [...(state.aVerifier || []), current.recherche];
+        state.cursor += 1;
+        state.essaisArticle = 0;
+        state.echecs = 0;
+        state.pauseJusqua = Date.now() + rythme(DELAI_RECHERCHE);
+        save(); render();
+        if (state.auto) scheduleTick(600);
+        return;
+      }
+
+      // premier échec sur cet article : on ralentit et on retente
+      state.pauseJusqua = Date.now() + DELAI_ECHEC;
       save(); render();
-      if (state.auto) scheduleTick(DELAI_ECHEC * state.echecs);
+      if (state.auto) scheduleTick(DELAI_ECHEC);
     } finally {
       working = false;
     }

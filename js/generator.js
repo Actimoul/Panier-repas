@@ -248,6 +248,10 @@ N'inclus dans "nouvelles_recettes" que les recettes à AJOUTER — les recettes 
     // 1. prix relevés dans le magasin où l'on commande — la meilleure source
     for (const [nom, r] of Object.entries(releve?.prix || {})) {
       if (r.par_kg > 0) prixConnus[nom] = r.par_kg;
+      else if (r.par_piece > 0) {
+        const poids = Catalogue.poidsPiece(nom);
+        if (poids > 0) prixConnus[nom] = Math.round((r.par_piece / (poids / 1000)) * 100) / 100;
+      }
     }
     // 2. produits déjà associés
     for (const [nom, m] of Object.entries(matchesPrix)) {

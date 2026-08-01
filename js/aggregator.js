@@ -148,7 +148,11 @@ const Aggregator = (() => {
       // Le prix du reste, quand on le connaît : c'est ce qui parle vraiment.
       let coutReste = null;
       const releve = (typeof Store !== 'undefined' && Store.getPrix) ? Store.getPrix() : null;
-      const parKg = releve?.prix?.[it.nom_canonique]?.par_kg
+      const rel = releve?.prix?.[it.nom_canonique];
+      const parKg = rel?.par_kg
+        ?? (rel?.par_piece > 0 && Catalogue.poidsPiece(it.nom_canonique)
+              ? rel.par_piece / (Catalogue.poidsPiece(it.nom_canonique) / 1000)
+              : null)
         ?? (typeof Catalogue !== 'undefined' ? Catalogue.prixReference(it.nom_canonique) : null);
       if (parKg > 0) {
         const kg = cond.unite === 'piece'
@@ -234,6 +238,10 @@ const Aggregator = (() => {
     const details = [];
     const releve = (typeof Store !== 'undefined' && Store.getPrix) ? Store.getPrix() : null;
     const prixReleves = releve?.prix || {};
+    // Quand l'utilisateur ne veut que des prix réels, on n'invente rien :
+    // les ingrédients non relevés restent sans prix, et le total le dit.
+    const relevesUniquement = (typeof Store !== 'undefined' && Store.getSettings)
+      ? !!Store.getSettings().prixRelevesUniquement : false;
     for (const it of items) {
       if (it.aAcheter <= 0) continue;
       let prix = null, source = null;
@@ -241,6 +249,10 @@ const Aggregator = (() => {
       const rel = prixReleves[it.nom_canonique];
       if (typeof it.prix_estime === 'number') {
         prix = it.prix_estime; source = 'reel';
+      } else if (rel && rel.par_piece > 0 && it.unite === 'piece') {
+        // Produit vendu à la pièce et compté à la pièce : direct.
+        prix = rel.par_piece * it.aAcheter;
+        source = 'reel';
       } else if (rel && rel.par_kg > 0) {
         // Prix relevé dans le magasin où l'on va commander : la meilleure source.
         const kg = it.unite === 'piece'
@@ -248,9 +260,16 @@ const Aggregator = (() => {
           : it.aAcheter / 1000;
         prix = rel.par_kg * kg;
         source = 'reel';
+      } else if (rel && rel.par_piece > 0) {
+        // Vendu à la pièce, besoin exprimé au poids : passer par le poids typique.
+        const pieces = it.aAcheter / Catalogue.poidsPiece(it.nom_canonique);
+        prix = rel.par_piece * pieces;
+        source = 'reel';
       } else if (it.match && typeof it.match.prix_eur === 'number' && it.match.pack_quantite > 0) {
         prix = Math.ceil(it.aAcheter / it.match.pack_quantite) * it.match.prix_eur;
         source = 'reel';
+      } else if (relevesUniquement) {
+        prix = null;   // pas de prix relevé : on ne comble pas le trou
       } else {
         const ref = Catalogue.prixReference(it.nom_canonique);
         if (ref !== null) {
@@ -264,7 +283,7 @@ const Aggregator = (() => {
         }
       }
 
-      if (prix === null) continue;
+      if (prix === null) { details.push({ nom: it.nom_canonique, prix: null, source: 'inconnu' }); continue; }
       total += prix;
       if (source === 'reel') connus++; else estimes++;
       details.push({ nom: it.nom_canonique, prix: Math.round(prix * 100) / 100, source });

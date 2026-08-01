@@ -814,3 +814,192 @@ n'est trouvé.
 Une boutique de test servant sa page d'accueil (avec promotions) sur toute URL
 inconnue reproduisait exactement le symptôme, Paquito compris. Après correction :
 les trois bons produits au panier, aucune promotion.
+
+## v3.7 — Garde-fou et diagnostic en un clic
+
+Après deux corrections plausibles mais insuffisantes (shadow DOM, URL de
+recherche inventée), le symptôme persistait : un produit sans rapport ajouté,
+puis blocage sur une liste générique. Deux ajouts, l'un défensif, l'autre pour
+sortir du diagnostic à l'aveugle.
+
+### Le pilote refuse d'agir sur une page qui n'a pas bougé
+Avant la recherche, les quatre premiers titres affichés sont mémorisés. Après,
+ils sont recomparés. **Identiques ⇒ la recherche n'a rien déclenché** : le
+pilote s'arrête immédiatement, sans rien ajouter, avec le message « la recherche
+n'a rien changé sur la page ». Un produit pris au hasard sur une page générique
+ne peut donc plus entrer dans le panier.
+
+### Diagnostic en un clic
+Un bouton **« 🔍 Copier un diagnostic »** dans le panneau produit un rapport
+complet — structure de la page, cartes détectées, HTML du bouton trouvé,
+cliquables candidats, points d'entrée appris, journal des dernières actions,
+article en cours — et le copie dans le presse-papiers. Plus besoin de passer
+par la console.
+
+## v3.8 — La cause des erreurs 500, enfin identifiée
+
+Le diagnostic remonté du terrain a tranché :
+
+```
+url            : intermarche.com/recherche/gingembre%20frais
+page_en_erreur : "Nous sommes désolés, le serveur ne répond pas."
+elements_avec_shadow : 0
+```
+
+**C'était mon URL.** Le gabarit `intermarche.com/recherche/{terme}` que j'avais
+inventé ne renvoie pas une page générique : il fait renvoyer une **erreur 500**
+par leur serveur. Et comme une page d'erreur ne porte pas de barre de recherche,
+le pilote retombait sur cette même URL au tour suivant — un cercle vicieux
+parfait, qui expliquait à la fois les 500 à répétition et les produits sans
+rapport ramassés sur les rares pages qui rendaient quelque chose.
+
+Le diagnostic écarte au passage l'hypothèse du shadow DOM : zéro élément
+encapsulé sur ce site.
+
+### Plus aucune URL fabriquée
+Les gabarits de recherche ont été **retirés de `ENSEIGNES`**. Il n'en reste
+aucun. Quand la page courante ne permet pas de chercher — page d'erreur, ou pas
+de barre de recherche — le pilote revient à **l'accueil du site**, qui la porte
+toujours, et repart de là. La recherche passe exclusivement par le formulaire.
+
+### Vérifié sur reproduction fidèle
+Une boutique de test qui renvoie une 500 sur `/recherche/{terme}` et sert
+normalement son accueil : en démarrant **depuis la page d'erreur**, le pilote la
+reconnaît, revient à l'accueil, cherche via le formulaire et ajoute les trois
+bons produits.
+
+## v3.9 — Le pilote cliquait sur le cœur
+
+La capture d'une vraie page de résultats Intermarché a permis de la reproduire
+fidèlement. Le test sur cette reproduction a révélé trois bugs d'un coup :
+
+```
+titre : "FRANCE"          ← une mention de provenance prise pour le nom
+prix  : 13.59             ← le prix au kilo pris pour le prix de vente
+bouton: "fav"             ← le cœur des favoris, pas l'ajout au panier
+```
+
+**Le troisième explique tout** : le bouton d'ajout d'Intermarché est une icône
+ronde rouge sans texte. Aucune de mes règles fondées sur le libellé ne le
+trouvait, et le repli « premier cliquable de la carte » tombait sur le cœur en
+haut à droite. Le pilote ajoutait donc aux favoris, jamais au panier.
+
+### Détection géométrique du bouton
+Deux mécanismes remplacent la recherche par libellé :
+
+- **Une liste d'exclusions** : favori, wishlist, souhait, cœur, comparer,
+  partager, alerte. Le piège est que sur beaucoup de sites la mise en favoris
+  s'intitule littéralement « Ajouter aux favoris ».
+- **Un score de position** : l'ajout au panier est en bas de carte, près du
+  prix ; les favoris sont dans le coin supérieur. Un cliquable dans la moitié
+  basse gagne des points, un cliquable dans le quart haut en perd. S'y ajoutent
+  le type d'élément (un `<button>` plutôt qu'un lien vers la fiche) et la
+  présence d'une icône.
+
+### Prix de vente contre prix au kilo
+Tout montant suivi d'une unité (`13,59 €/Kg`, `3,29 €/Pièce`) est écarté du
+prix de vente. Le dernier montant nu de la carte est retenu — le prix est
+presque toujours en bas.
+
+### Titres
+Le nom du produit n'est presque jamais une feuille du DOM : « Le Choix du
+Primeur<br>Ail BLANC - CAT. 1 » contient un `<br>`, alors que « FRANCE » est
+une feuille bien plus courte. Les candidats sont désormais notés (longueur,
+casse mixte, position sous l'image), et `innerText` remplace `textContent` pour
+que les sauts de ligne deviennent des espaces — sans quoi « Primeur<br>Ail »
+donnait « PrimeurAil », dans lequel le mot « ail » est introuvable.
+
+### Résultat sur la reproduction
+```
+75 | pert 100 |  3.29 €/kg | Le Choix du Primeur Ail BLANC - CAT. 1
+60 | pert 100 | 13.59 €/kg | Le Choix du Primeur Ail BLANC - CAT. 1
+40 | pert 100 | 26.71 €/kg | Ducros Ail semoule
+bouton retenu : celui d'ajout au panier
+```
+
+## v4.0 — Les prix découpés en morceaux
+
+La recherche par formulaire fonctionne : la page des résultats s'affiche
+correctement. Restait « Aucun produit détecté sur cette page ».
+
+La détection de grille cherchait un prix dans **un seul nœud texte**. Or les
+sites d'e-commerce découpent presque toujours l'affichage : `<span>1</span>`
+`<span>,36</span><span>€</span>`, souvent avec les centimes en exposant. Aucune
+feuille du DOM ne contenait donc « 1,36 € », et la grille restait invisible.
+
+`noeudsPrix()` cherche désormais le **plus petit élément dont le texte rendu
+forme un prix complet** — pas la feuille, mais le conteneur minimal. Si un
+enfant porte déjà le prix entier, c'est lui qui est retenu.
+
+### Code-barres, détection générique
+`data-produit-id` chez Intermarché, `data-ean` ailleurs : la liste d'attributs
+ne serait jamais complète. Tout attribut `data-*` dont la valeur est une suite
+de 8 à 14 chiffres est désormais accepté, en excluant les noms évoquant un
+prix, une quantité ou un rang.
+
+### Vérifié sur les deux formats
+Prix en un bloc et prix éclaté en spans donnent le même résultat : libellés,
+prix de vente, prix au kilo, codes-barres et boutons d'ajout tous extraits
+correctement, sans régression sur les autres structures de test.
+
+## v4.1 — Prix justes, et la liste va jusqu'au bout
+
+Quatorze produits ajoutés au panier : le mécanisme fonctionne. Restaient deux
+défauts.
+
+### Les prix étaient sous-évalués — trois causes cumulées
+1. **« 3,29 €/Pièce » était enregistré comme prix au kilo.** Pour de l'ail à
+   13 €/kg, l'estimation s'effondrait. `parseUnitPrice()` renvoie maintenant le
+   montant **et son unité** ; un prix à la pièce est stocké dans `par_piece`,
+   converti au kilo seulement si nécessaire, via le poids typique d'une unité.
+2. **La contenance n'était lue que dans le titre.** « Le pot de 140g » vit sous
+   le nom du produit, pas dedans : le prix au kilo ne pouvait pas être recalculé
+   quand le site ne l'affichait pas. La carte entière est désormais analysée.
+3. **Le prix retenu pouvait être le mauvais montant.** Une carte porte le prix
+   de vente, le prix au kilo, parfois un « à partir de ». `prixDeVente()`
+   choisit désormais par la **position** — le montant nu le plus bas dans la
+   carte, à côté du bouton d'ajout — et ignore tout montant suivi d'une unité.
+
+### Le pilote ne s'arrête plus sur un ingrédient récalcitrant
+Trois échecs consécutifs stoppaient toute la liste. C'était trop strict sur
+quarante articles : un ingrédient introuvable condamnait les trente suivants.
+
+Désormais, seule une **panne du site** arrête le pilote. Un article en échec est
+retenté une fois, puis **passé** et ajouté à la liste « à faire à la main »,
+affichée dans le récapitulatif final.
+
+Vérifié sur une liste contenant deux ingrédients volontairement introuvables :
+les cinq articles sont traités, les deux absents signalés, les trois autres au
+panier.
+
+## v4.2 — Le relevé de prix ne dépend plus du mode rapide
+
+Les prix affichés devaient être ceux du magasin, pas des estimations. Le relevé
+existait mais exigeait le mode API, qui ne s'active pas partout.
+
+### Relevé en mode normal
+Maintenant que la recherche par formulaire fonctionne, le relevé passe par elle :
+un ingrédient à la fois, au rythme prudent, **sans rien ajouter au panier**.
+Comptez environ six secondes par ingrédient — quatre minutes pour une liste de
+quarante. Si le mode API s'apprend en cours de route, la suite s'accélère
+d'elle-même.
+
+Trois propriétés utiles : l'état est sauvegardé après chaque ingrédient, donc un
+relevé interrompu n'est jamais perdu et reprend là où il s'était arrêté ; un
+second clic sur le bouton l'arrête proprement ; et les ingrédients déjà relevés
+sont sautés.
+
+### Une recherche à résultat unique est un résultat
+`trouverListeProduits()` exigeait au moins deux éléments pour reconnaître une
+liste de produits. Prudent pendant l'apprentissage de l'API, absurde à l'usage :
+une recherche pointue ne ramène parfois qu'un produit, et son prix était perdu.
+Le seuil est maintenant de 2 à l'apprentissage, 1 à l'interrogation.
+
+### « N'utiliser que les prix relevés en magasin »
+Nouvelle option dans les réglages. Activée, l'app **n'invente plus rien** : les
+ingrédients non relevés s'affichent « prix à relever » et le total ne les compte
+pas. Le pied de ticket dit exactement où on en est : « 3 prix relevés chez
+Intermarché, 16 encore à relever ».
+
+Désactivée (par défaut), les prix de référence complètent le tableau, toujours
+affichés en gris pour les distinguer des prix réels en vert.

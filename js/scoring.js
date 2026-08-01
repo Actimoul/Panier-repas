@@ -90,6 +90,9 @@ const Scoring = (() => {
   /* Price per kg / L / unit — the only fair way to compare packs. */
   function unitPrice(candidate) {
     if (candidate.prix_par_kg > 0) return candidate.prix_par_kg;
+    // Un prix « à la pièce » affiché par le site est directement le prix
+    // unitaire : ne jamais le confondre avec un prix au kilo.
+    if (candidate.prix_par_piece > 0) return candidate.prix_par_piece;
     const size = packSize(candidate);
     if (!size || !(candidate.prix_eur > 0)) return null;
     if (size.unite === 'piece') return candidate.prix_eur / size.quantite;
