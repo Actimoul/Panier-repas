@@ -70,8 +70,8 @@ const StoreAdapter = {
     return null;
   },
 
-  /* URL de recherche de l'enseigne courante. Repli générique si le
-     domaine n'est pas répertorié : la plupart des sites acceptent ?q= */
+  /* URL de recherche — REPLI uniquement, quand le formulaire est
+     introuvable. Ces gabarits sont des suppositions et peuvent être faux. */
   searchPageUrl(query) {
     const e = this.enseigne();
     if (e) return e.search(query);
@@ -131,6 +131,67 @@ const StoreAdapter = {
   aucunResultat() {
     const txt = (document.body?.innerText || '').toLowerCase();
     return /\b(aucun (r[ée]sultat|produit)|pas de r[ée]sultat|0 produit|rien ne correspond)\b/.test(txt);
+  },
+
+  /* --- Recherche par le formulaire du site ----------------- */
+
+  /* Deviner l'URL de recherche d'un site est une mauvaise idée : si le
+     gabarit est faux, le site sert une page d'accueil et on récolte des
+     promotions au hasard. On utilise donc SON champ de recherche. */
+  SELECTEURS_RECHERCHE: [
+    'input[type="search"]',
+    'input[role="searchbox"]',
+    '[role="searchbox"]',
+    'input[name*="earch" i]',
+    'input[name*="echerche" i]',
+    'input[id*="earch" i]',
+    'input[id*="echerche" i]',
+    'input[placeholder*="echerch" i]',
+    'input[aria-label*="echerch" i]',
+    'input[placeholder*="produit" i]',
+    'form[role="search"] input[type="text"]'
+  ].join(','),
+
+  champRecherche() {
+    const candidats = this.chercherProfond(this.SELECTEURS_RECHERCHE)
+      .filter(el => el.offsetParent !== null && !el.disabled && !el.readOnly);
+    // le plus large est en général la barre principale, pas un filtre
+    candidats.sort((a, b) => (b.offsetWidth || 0) - (a.offsetWidth || 0));
+    return candidats[0] || null;
+  },
+
+  /* Écrire dans un champ piloté par un framework demande de passer par le
+     setter natif : une simple affectation de .value est ignorée par React. */
+  ecrireDansChamp(champ, texte) {
+    const proto = champ instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+    champ.focus();
+    if (setter) setter.call(champ, texte); else champ.value = texte;
+    champ.dispatchEvent(new Event('input', { bubbles: true }));
+    champ.dispatchEvent(new Event('change', { bubbles: true }));
+  },
+
+  /* Lance une recherche via le formulaire du site. Retourne true si elle a
+     pu être déclenchée. */
+  async rechercherViaFormulaire(terme) {
+    const champ = this.champRecherche();
+    if (!champ) return false;
+    this.ecrireDansChamp(champ, terme);
+    await new Promise(r => setTimeout(r, 400));
+
+    for (const type of ['keydown', 'keypress', 'keyup']) {
+      champ.dispatchEvent(new KeyboardEvent(type, {
+        key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true
+      }));
+    }
+
+    // certains formulaires n'écoutent que la soumission
+    const form = champ.closest('form');
+    if (form) {
+      try { form.requestSubmit ? form.requestSubmit() : form.submit(); } catch { /* ignore */ }
+    }
+    return true;
   },
 
   /* --- Détection générique -------------------------------- */

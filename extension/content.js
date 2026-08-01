@@ -474,7 +474,24 @@
         save();
         setStatus(`Recherche « ${current.recherche} »…`);
         Sniffer.observer(current.recherche);
-        await new Promise(r => setTimeout(r, 700));
+        await new Promise(r => setTimeout(r, 500));
+
+        // On passe par le champ de recherche du site : deviner son URL de
+        // recherche mène à une page d'accueil et à des produits au hasard.
+        const lance = await StoreAdapter.rechercherViaFormulaire(current.recherche);
+        if (lance) {
+          // le site peut répondre sans recharger (application monopage) :
+          // on laisse le rendu se faire, puis on analyse sur place.
+          await new Promise(r => setTimeout(r, 2500));
+          if (!document.getElementById('pr-panel')) return; // la page a navigué
+          const ranked = await analyse();
+          state.echecs = 0;
+          await apprendreRecherche(current.recherche);
+          await deciderEtAjouter(ranked);
+          return;
+        }
+
+        state.log.push({ ok: false, msg: '⚠ champ de recherche introuvable — repli sur l\'URL' });
         location.href = StoreAdapter.searchPageUrl(current.recherche);
         return; // page unloads here
       }

@@ -783,3 +783,34 @@ Et pour le plat qui reçoit : « ouvert Lun pour Curry de poulet ».
 
 La consigne de génération a été précisée avec cet exemple exact, pour que le
 comportement devienne systématique sur les briques, pots et bocaux entamés.
+
+## v3.6 — L'URL de recherche était inventée
+
+Symptôme constant sur Intermarché : un seul produit ajouté — souvent une
+promotion sans rapport, un pack de jus d'orange — puis « bouton d'ajout
+introuvable » en série, puis une erreur 500.
+
+**La cause était une supposition de ma part.** `ENSEIGNES` contenait un gabarit
+d'URL de recherche par enseigne (`intermarche.com/recherche/{terme}`) que je
+n'avais jamais vérifié. Quand le gabarit est faux, le site ne renvoie pas une
+erreur : il sert sa page d'accueil. L'adapter y trouvait des cartes produit
+parfaitement valides — les promotions — les notait, en ajoutait une, puis
+échouait sur les suivantes. Et les navigations inutiles à répétition
+provoquaient le 500.
+
+### La recherche passe par le formulaire du site
+`rechercherViaFormulaire()` repère la barre de recherche (une douzaine de
+sélecteurs, shadow DOM compris, en gardant la plus large pour éviter les
+filtres), écrit dedans **via le setter natif** — une simple affectation de
+`.value` est ignorée par React et consorts — puis émet les événements
+`input`/`change`, la touche Entrée et la soumission du formulaire.
+
+Le pilote attend ensuite le rendu et analyse **sur place** : beaucoup de sites
+répondent sans recharger la page, ce qui supprime au passage une navigation par
+article. L'URL devinée ne sert plus que de repli quand aucun champ de recherche
+n'est trouvé.
+
+### Reproduit et vérifié
+Une boutique de test servant sa page d'accueil (avec promotions) sur toute URL
+inconnue reproduisait exactement le symptôme, Paquito compris. Après correction :
+les trois bons produits au panier, aucune promotion.
