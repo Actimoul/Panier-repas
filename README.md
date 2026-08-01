@@ -356,3 +356,62 @@ Ajouter une enseigne : une entrée dans `ENSEIGNES` en tête de
 
 L'en-tête du ticket, le lien de recherche du dialogue produit et le payload
 d'export portent désormais le nom de l'enseigne choisie.
+
+## v2.2 — Génération deux à trois fois plus rapide
+
+Trois causes à la lenteur, trois corrections.
+
+**1. L'app attendait les recettes de cuisine avant d'afficher quoi que ce soit.**
+Les étapes de préparation représentaient à elles seules un tiers du texte
+produit. Elles ne sont plus générées avec le plan : le menu de la semaine
+s'affiche dès que les recettes et le planning sont là, et la préparation d'un
+plat s'écrit à la demande, quand tu l'ouvres (2-3 s pour une recette), puis
+reste mémorisée dans le plan.
+
+**2. Le format de sortie était bavard.** Le modèle recopiait le profil que
+l'app possède déjà, et émettait le planning en 28 objets nommés. Le profil a
+disparu de la réponse et le planning est passé en tableaux compacts
+(`[jour, "dej", "r-slug", 1.6]`), normalisés à la réception. **Sortie réduite
+de 34 %** sur une semaine de 10 recettes — mesuré, pas estimé.
+
+**3. Aucun retour pendant l'attente.** L'appel se fait désormais en streaming :
+le statut affiche « 3 recettes composées… » et progresse réellement, au lieu
+d'un spinner muet. Les tours de correction (format, variété, catalogue)
+streament aussi.
+
+Ordre de grandeur sur une semaine de 10 recettes, à débit constant : de ~31 s à
+~20 s pour le premier affichage, avec une progression visible du début à la fin.
+
+## v2.3 — Transfert direct app ↔ extension
+
+Le copier-coller d'un blob JSON entre deux fenêtres était une friction inutile,
+et le popup avait gardé des textes « Leclerc » codés en dur alors que
+l'enseigne est désormais un réglage.
+
+### Le pont
+`extension/bridge.js` est un content script injecté sur l'origine de l'app
+(`*.github.io`, `localhost`). Il relaie des `window.postMessage` dans les deux
+sens, en n'acceptant que les messages de la même fenêtre et de la même origine :
+
+- l'app envoie sa liste → le pont l'écrit dans `chrome.storage` → confirmation ;
+- l'app réclame les choix → le pont lit `prState.choix` → réponse ;
+- un `ping` permet de savoir si l'extension est installée.
+
+Côté app, `js/bridge.js` expose `Bridge.ping()`, `Bridge.envoyerListe()` et
+`Bridge.recupererChoix()`. Toute absence de réponse sous 1-2 s signifie
+« extension non installée » : le bouton **Copier (secours)** reste disponible et
+l'import manuel refait surface tout seul.
+
+### Ce qui change à l'usage
+- **Envoyer à l'extension** remplace « Copier pour l'extension » : un clic, rien
+  à coller. Avec deux livraisons recommandées, l'app demande d'abord laquelle
+  préparer et n'envoie que ses articles, créneau compris.
+- **Récupérer les choix** lit directement l'extension au lieu d'ouvrir une zone
+  de saisie.
+- Le popup affiche l'état réel (« 18 articles pour Intermarché — 4 déjà
+  traités ») et nomme l'enseigne de la liste chargée. La zone de collage est
+  repliée dans un « Charger manuellement », en secours.
+
+**Note d'installation** : le pont exige de recharger l'extension
+(`chrome://extensions` → ↻) après mise à jour, car un content script sur une
+nouvelle origine ne s'active pas à chaud.

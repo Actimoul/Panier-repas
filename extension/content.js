@@ -1,4 +1,4 @@
-/* Floating panel injected on the Leclerc site.
+/* Floating panel injected on the store site. 
 
    AUTOPILOT: one click and the extension walks the whole list by itself —
    for each article it searches, harvests candidates, scores them (price per kg

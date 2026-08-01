@@ -48,7 +48,8 @@
   function renderSemaine() {
     const plan = Store.getPlan();
     if (generating) {
-      view.innerHTML = `<div class="loading" id="gen-status">Génération du plan de semaine…</div>`;
+      view.innerHTML = `<div class="loading" id="gen-status">Composition du menu…</div>
+        <p class="hint" style="text-align:center">Les préparations sont écrites à la demande, quand tu ouvres un plat.</p>`;
       return;
     }
     if (!plan) {
@@ -146,7 +147,8 @@
     const recipes = plan.recettes.map(r => {
       const ings = r.ingredients.map(i =>
         `<li>${esc(i.nom_canonique)} — <span style="font-family:var(--font-mono)">${Aggregator.fmtQty(i.quantite, i.unite)}</span></li>`).join('');
-      const steps = r.etapes.map(e => `<li>${esc(e)}</li>`).join('');
+      const steps = (r.etapes || []).map(e => `<li>${esc(e)}</li>`).join('')
+        || '<li class="hint">Ouvre le plat depuis le tableau pour générer la préparation.</li>';
       const slots = planning.filter(p => p.recette_id === r.id)
         .map(p => `${DAY_LABELS[p.jour - 1]} ${MEAL_LABELS[p.repas] || p.repas}`).join(' · ');
       return `
@@ -251,7 +253,9 @@
         <ul class="ing-list">${lignes(coef)}</ul>
 
         <div class="sub-title">Préparation</div>
-        <ol class="etapes">${r.etapes.map(e => `<li>${esc(e)}</li>`).join('')}</ol>
+        ${r.etapes?.length
+          ? `<ol class="etapes">${r.etapes.map(e => `<li>${esc(e)}</li>`).join('')}</ol>`
+          : `<div id="etapes-zone"><button class="btn ghost block" id="btn-etapes">Voir la préparation</button></div>`}
 
         ${autres.length ? `<p class="hint">Ce plat revient aussi : ${
           autres.map(p => `${DAY_LABELS[p.jour - 1]} ${MEAL_LABELS[p.repas] || p.repas}`).join(', ')
@@ -264,6 +268,24 @@
       body.querySelectorAll('.seg-btn[data-mode]').forEach(b =>
         b.addEventListener('click', () => draw(b.dataset.mode)));
       body.querySelector('#rp-close').addEventListener('click', () => dlg.close());
+
+      body.querySelector('#btn-etapes')?.addEventListener('click', async () => {
+        const zone = body.querySelector('#etapes-zone');
+        zone.innerHTML = '<div class="loading">Rédaction de la préparation…</div>';
+        try {
+          const etapes = await Generator.genererEtapes(r);
+          r.etapes = etapes;
+          const plan2 = Store.getPlan();
+          const cible = plan2?.recettes.find(x => x.id === r.id);
+          if (cible) { cible.etapes = etapes; Store.setPlan(plan2); }
+          draw(mode);
+        } catch (err) {
+          console.error(err);
+          zone.innerHTML = `<p class="hint">Échec : ${esc(err.message)}</p>
+            <button class="btn ghost block" id="btn-etapes">Réessayer</button>`;
+          zone.querySelector('#btn-etapes').addEventListener('click', () => draw(mode));
+        }
+      });
     }
 
     draw('repas');
@@ -435,11 +457,12 @@
         ${complete ? '' : '<div class="ticket-foot">* partiel : associe les produits (lignes "?") pour un total complet</div>'}
       </div>
       <p class="hint">Touche une ligne "?" pour l'associer à un produit Leclerc. L'association est mémorisée pour toutes les semaines suivantes.</p>
+      <button class="btn primary block" id="btn-send-ext">Envoyer à l'extension</button>
       <div class="btn-row">
-        <button class="btn ghost" id="btn-copy-export">Copier pour l'extension</button>
-        <button class="btn ghost" id="btn-import">Importer les choix</button>
+        <button class="btn ghost" id="btn-copy-export">Copier (secours)</button>
+        <button class="btn ghost" id="btn-import">Récupérer les choix</button>
       </div>
-      <button class="btn primary block" id="btn-ordered">Commande passée ✓</button>`;
+      <button class="btn ghost block" id="btn-ordered">Commande passée ✓</button>`;
 
     view.querySelectorAll('.ticket-line.unmatched, .ticket-line.matched').forEach(el => {
       const open = () => openMatchDialog(el.dataset.name);
@@ -449,11 +472,79 @@
 
     document.getElementById('btn-slots')?.addEventListener('click', openSlotsDialog);
 
-    document.getElementById('btn-copy-export').addEventListener('click', async () => {
+    function payloadExport() {
       const st = Store.getSettings();
-      const payload = Aggregator.buildExport(items, plan, delivery, {
+      return Aggregator.buildExport(items, plan, delivery, {
         enseigne: st.enseigne, prefSante: st.prefSante, budgetMaxArticle: st.budgetMaxArticle
       });
+    }
+
+    /* Direct hand-off: no clipboard, no paste. Falls back with a clear
+       message when the extension isn't installed. */
+    /* With two deliveries, only one basket is filled at a time. */
+    function choisirLivraison() {
+      if (!delivery || delivery.frequence < 2) return Promise.resolve(1);
+      return new Promise((resolve) => {
+        const dlg = document.getElementById('dlg-match');
+        const body = document.getElementById('dlg-match-body');
+        body.innerHTML = `
+          <h2>Quelle livraison préparer ?</h2>
+          <p class="hint">Deux livraisons sont conseillées cette semaine. L'extension ne remplira que celle choisie.</p>
+          ${delivery.livraisons.map(d => {
+            const n = payloadExport().articles.filter(a => (a.livraison || 1) === d.rang).length;
+            return `<button class="match-option" data-rang="${d.rang}">
+              <b>Livraison ${d.rang}</b> — ${esc(d.label)} · ${esc(d.date)}<br>
+              <span class="hint" style="margin:0">${n} article${n > 1 ? 's' : ''}</span></button>`;
+          }).join('')}
+          <div class="dialog-actions"><button class="btn ghost" id="liv-cancel">Annuler</button></div>`;
+        body.querySelectorAll('.match-option').forEach(b => b.addEventListener('click', () => {
+          dlg.close();
+          resolve(parseInt(b.dataset.rang, 10));
+        }));
+        body.querySelector('#liv-cancel').addEventListener('click', () => { dlg.close(); resolve(null); });
+        dlg.showModal();
+      });
+    }
+
+    document.getElementById('btn-send-ext').addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      const libelle = btn.textContent;
+      // Vérifier la présence de l'extension AVANT de poser des questions.
+      try {
+        await Bridge.ping();
+      } catch {
+        toast('Extension non détectée — utilise « Copier (secours) »', true);
+        return;
+      }
+      const rang = await choisirLivraison();
+      if (rang === null) return;
+      btn.disabled = true;
+      btn.textContent = 'Envoi…';
+      try {
+        const full = payloadExport();
+        const payload = {
+          ...full,
+          articles: full.articles.filter(a => (a.livraison || 1) === rang),
+          creneau: (full.livraisons || []).find(l => l.rang === rang) || null
+        };
+        if (!payload.articles.length) throw new Error('aucun article pour cette livraison');
+        const rep = await Bridge.envoyerListe(payload);
+        btn.textContent = `${rep.count} articles envoyés ✓`;
+        toast('Liste chargée — ouvre le site du magasin');
+        setTimeout(() => { btn.textContent = libelle; btn.disabled = false; }, 2500);
+      } catch (err) {
+        btn.textContent = libelle;
+        btn.disabled = false;
+        if (err.message === 'EXTENSION_ABSENTE') {
+          toast('Extension non détectée — utilise « Copier (secours) »', true);
+        } else {
+          toast('Échec envoi : ' + err.message, true);
+        }
+      }
+    });
+
+    document.getElementById('btn-copy-export').addEventListener('click', async () => {
+      const payload = payloadExport();
       try {
         await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
         toast('Liste copiée — colle-la dans l\'extension');
@@ -463,7 +554,15 @@
       }
     });
 
-    document.getElementById('btn-import')?.addEventListener('click', () => openImportDialog());
+    document.getElementById('btn-import')?.addEventListener('click', async () => {
+      try {
+        const rep = await Bridge.recupererChoix();
+        if (rep.choix?.length) { appliquerChoix(rep.choix); return; }
+        toast('Aucun choix enregistré dans l\'extension', true);
+      } catch (err) {
+        openImportDialog();   // extension absente : saisie manuelle
+      }
+    });
 
     document.getElementById('btn-ordered').addEventListener('click', () => {
       if (!confirm('Marquer la commande comme passée ? Les quantités achetées seront ajoutées à ton inventaire avec des DLC estimées.')) return;
@@ -477,6 +576,31 @@
         toast('Échec mise à jour inventaire : ' + err.message, true);
       }
     });
+  }
+
+  /* Turn the extension's picks into permanent product associations. */
+  function appliquerChoix(choix) {
+    const matches = Store.getMatches();
+    let n = 0;
+    for (const c of choix) {
+      if (!c.nom_canonique || !c.libelle) continue;
+      const existing = matches[c.nom_canonique] || {};
+      const size = Scoring.packSize({ libelle: c.libelle });
+      matches[c.nom_canonique] = {
+        ...existing,
+        libelle: c.libelle,
+        pack_quantite: size?.quantite || existing.pack_quantite || 1,
+        pack_unite: size?.unite || existing.pack_unite || 'piece',
+        prix_eur: typeof c.prix_eur === 'number' ? c.prix_eur : existing.prix_eur,
+        ref: c.ean || existing.ref,
+        score: c.score,
+        justification: c.justification
+      };
+      n++;
+    }
+    Store.setMatches(matches);
+    renderPanier();
+    toast(`${n} produit(s) enregistré(s) ✓`);
   }
 
   /* Import the products the extension actually picked, so the app's
@@ -505,28 +629,8 @@
         toast('Format inattendu — copie depuis l\'extension', true);
         return;
       }
-      const matches = Store.getMatches();
-      let n = 0;
-      for (const c of payload.choix) {
-        if (!c.nom_canonique || !c.libelle) continue;
-        const existing = matches[c.nom_canonique] || {};
-        const size = Scoring.packSize({ libelle: c.libelle });
-        matches[c.nom_canonique] = {
-          ...existing,
-          libelle: c.libelle,
-          pack_quantite: size?.quantite || existing.pack_quantite || 1,
-          pack_unite: size?.unite || existing.pack_unite || 'piece',
-          prix_eur: typeof c.prix_eur === 'number' ? c.prix_eur : existing.prix_eur,
-          ref: c.ean || existing.ref,
-          score: c.score,
-          justification: c.justification
-        };
-        n++;
-      }
-      Store.setMatches(matches);
       dlg.close();
-      renderPanier();
-      toast(`${n} produit(s) importé(s) ✓`);
+      appliquerChoix(payload.choix);
     });
     dlg.showModal();
   }

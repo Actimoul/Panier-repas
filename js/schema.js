@@ -49,7 +49,8 @@ const PlanSchema = (() => {
           if (!RAYONS.includes(ing.rayon)) push(`${w}.rayon invalid: ${ing.rayon}`);
         });
       }
-      if (!Array.isArray(r.etapes) || r.etapes.length === 0) push(`${where}.etapes must be non-empty`);
+      // etapes are generated lazily, on demand — absence is normal here
+      if (r.etapes !== undefined && !Array.isArray(r.etapes)) push(`${where}.etapes must be an array`);
     });
 
     if (plan.planning) {

@@ -16,7 +16,7 @@ RÈGLES ABSOLUES :
    - Jamais le même plat deux jours de suite sur le même créneau de repas.
    - Les petits-déjeuners et collations peuvent être plus répétitifs que les déjeuners et dîners, mais proposes-en au moins 2 variantes chacun.
    - L'économie se fait par le PARTAGE D'INGRÉDIENTS entre recettes différentes, pas par la répétition du même plat : réutilise un même ingrédient acheté (un poulet, un chou, un pot de crème) dans 2 ou 3 recettes distinctes de la semaine, en variant la technique et l'assaisonnement.
-   Étapes concises : 3 à 6 lignes par recette, une phrase chacune.
+   N'ÉMETS PAS le champ "etapes" : les étapes de préparation sont demandées séparément, à la demande. Cela vaut pour toutes les recettes.
 6. Le planning respecte les DLC : ingrédients peremption_type "tres_courte" cuisinés dans les 2-3 premiers jours.
 7. Les macros cumulées de chaque jour approchent kcal_cible_jour (±5 %) et atteignent proteines_cible_jour_g.
 8. Respecte exclusions sans exception.
@@ -34,7 +34,6 @@ STRUCTURE ATTENDUE (types) :
 {
   "version": "1.0",
   "semaine": { "date_debut": "YYYY-MM-DD", "nb_jours": 7 },
-  "profil": { ...copie du profil reçu... },
   "recettes": [{
     "id": "r-slug", "nom": str, "portions": int,
     "temps_preparation_min": int, "temps_cuisson_min": int,
@@ -46,18 +45,46 @@ STRUCTURE ATTENDUE (types) :
       "peremption_type": "tres_courte|courte|moyenne|longue",
       "fond_de_placard": bool (optionnel)
     }],
-    "etapes": [str]
   }],
-  "planning": [{ "jour": 1-7, "repas": "petit_dejeuner|dejeuner|collation|diner", "recette_id": str, "portions": int }]
-}`;
+  "planning": [[jour(1-7), "pd"|"dej"|"col"|"din", "r-slug", portions(nombre)], ...]
+}
+Le planning est un tableau de tableaux compacts, pas d'objets — codes de repas : pd = petit-déjeuner, dej = déjeuner, col = collation, din = dîner.`;
 
   function stripFences(text) {
     return text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
   }
 
+  /* The model emits a compact planning ([jour, code, id, portions]) to save
+     output tokens — the rest of the app works with objects. */
+  const CODE_REPAS = { pd: 'petit_dejeuner', dej: 'dejeuner', col: 'collation', din: 'diner' };
+
+  function normalise(plan) {
+    if (!plan || !Array.isArray(plan.planning)) return plan;
+    plan.planning = plan.planning.map(p => {
+      if (Array.isArray(p)) {
+        const [jour, code, recette_id, portions] = p;
+        return { jour, repas: CODE_REPAS[code] || code, recette_id, portions: portions ?? 1 };
+      }
+      return p;
+    });
+    for (const r of plan.recettes || []) {
+      if (!Array.isArray(r.etapes)) r.etapes = [];   // filled lazily, on demand
+    }
+    return plan;
+  }
+
+  /* Rough progress from a partial JSON stream: how many recipes have been
+     emitted so far. Lets the UI say something truthful while waiting. */
+  function compteRecettes(partial) {
+    const m = partial.match(/"id"\s*:\s*"r-/g);
+    return m ? m.length : 0;
+  }
+
   const TIMEOUT_MS = 180000; // 3 min hard ceiling per call
 
-  async function callApi(settings, messages, systemPrompt) {
+  /* Streamed call: the UI can report progress while tokens arrive, which is
+     what makes a 40 s generation feel workable instead of frozen. */
+  async function callApi(settings, messages, systemPrompt, onProgress) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
     let res;
@@ -75,27 +102,55 @@ STRUCTURE ATTENDUE (types) :
           model: settings.model,
           max_tokens: 16000,
           system: systemPrompt,
+          stream: true,
           messages
         })
       });
     } catch (err) {
+      clearTimeout(timer);
       if (err.name === 'AbortError') throw new Error('Délai dépassé (3 min). Réessaie.');
       throw new Error(`Réseau : ${err.message}`);
-    } finally {
-      clearTimeout(timer);
     }
     if (!res.ok) {
+      clearTimeout(timer);
       const body = await res.text();
       throw new Error(`API ${res.status}: ${body.slice(0, 300)}`);
     }
-    const data = await res.json();
-    const text = (data.content || [])
-      .filter(b => b.type === 'text')
-      .map(b => b.text)
-      .join('\n');
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let text = '';
+    let stopReason = null;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === '[DONE]') continue;
+          let ev;
+          try { ev = JSON.parse(payload); } catch { continue; }
+          if (ev.type === 'content_block_delta' && ev.delta?.text) {
+            text += ev.delta.text;
+            onProgress?.(text);
+          } else if (ev.type === 'message_delta' && ev.delta?.stop_reason) {
+            stopReason = ev.delta.stop_reason;
+          } else if (ev.type === 'error') {
+            throw new Error(ev.error?.message || 'Erreur de flux');
+          }
+        }
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+
     if (!text) throw new Error('Réponse vide de l\'API');
-    // Truncated output would silently fail JSON.parse and trigger a useless retry.
-    if (data.stop_reason === 'max_tokens') {
+    if (stopReason === 'max_tokens') {
       throw new Error('Réponse tronquée : réduis le nombre de repas/jour ou de convives.');
     }
     return text;
@@ -136,14 +191,18 @@ STRUCTURE ATTENDUE (types) :
     const system = `${SYSTEM_PROMPT}\n\n${Catalogue.promptBlock(matches, unavailable)}`;
 
     const messages = [{ role: 'user', content: JSON.stringify(userPayload) }];
-    onStatus?.('Génération du plan de semaine… (1/3)');
-    let text = await callApi(settings, messages, system);
+    const suivi = (partial) => {
+      const n = compteRecettes(partial);
+      onStatus?.(n ? `${n} recette${n > 1 ? 's' : ''} composée${n > 1 ? 's' : ''}…` : 'Composition du menu…');
+    };
+    onStatus?.('Composition du menu…');
+    let text = await callApi(settings, messages, system, suivi);
 
     let plan = null;
     // Round 1-2: schema validity. Round 3: catalogue realism.
     for (let attempt = 0; attempt < 4; attempt++) {
       try {
-        plan = JSON.parse(stripFences(text));
+        plan = normalise(JSON.parse(stripFences(text)));
       } catch (err) {
         plan = null;
       }
@@ -153,26 +212,26 @@ STRUCTURE ATTENDUE (types) :
         if (attempt >= 2) {
           throw new Error(`Plan invalide après correction : ${check.errors.slice(0, 5).join(' | ')}`);
         }
-        onStatus?.('Format à corriger, nouvelle tentative… (2/3)');
+        onStatus?.('Correction du format…');
         messages.push({ role: 'assistant', content: text });
         messages.push({
           role: 'user',
           content: `Ta réponse est invalide : ${check.errors.slice(0, 10).join(' | ')}. Renvoie le JSON complet corrigé, uniquement le JSON.`
         });
-        text = await callApi(settings, messages, system);
+        text = await callApi(settings, messages, system, suivi);
         continue;
       }
 
       // valid JSON — now check variety, then store availability
       const varAudit = PlanSchema.auditVariete(plan, varieteCfg.max_repetitions);
       if (!varAudit.ok && attempt < 2) {
-        onStatus?.('Trop de répétitions, diversification… (2/3)');
+        onStatus?.('Diversification des menus…');
         messages.push({ role: 'assistant', content: text });
         messages.push({
           role: 'user',
           content: `Le plan est trop répétitif : ${varAudit.problemes.slice(0, 6).join(' ; ')}. Ajoute des recettes distinctes (${varieteCfg.recettes_min} à ${varieteCfg.recettes_max} au total) en réutilisant les ingrédients déjà achetés dans de NOUVELLES recettes plutôt qu'en répétant les mêmes plats. Renvoie le JSON complet corrigé, uniquement le JSON.`
         });
-        text = await callApi(settings, messages, system);
+        text = await callApi(settings, messages, system, suivi);
         continue;
       }
 
@@ -182,16 +241,39 @@ STRUCTURE ATTENDUE (types) :
         plan.hors_catalogue = odd.length ? odd : undefined;
         return plan;
       }
-      onStatus?.('Ajustement au catalogue Leclerc… (3/3)');
+      onStatus?.('Ajustement au catalogue…');
       messages.push({ role: 'assistant', content: text });
       messages.push({
         role: 'user',
         content: `Ces ingrédients ne sont pas trouvables en hypermarché français : ${odd.join(', ')}. Remplace chacun par l'équivalent le plus proche du bloc CATALOGUE, ajuste les étapes en conséquence, et renvoie le JSON complet corrigé, uniquement le JSON.`
       });
-      text = await callApi(settings, messages, system);
+      text = await callApi(settings, messages, system, suivi);
     }
     return plan;
   }
 
-  return { generate };
+  const SYSTEM_ETAPES = `Tu rédiges les étapes de préparation d'une recette.
+Réponds UNIQUEMENT avec un tableau JSON de chaînes, sans texte autour, sans balises markdown.
+3 à 6 étapes, une phrase courte et concrète chacune, à l'impératif.
+Mentionne les températures et les durées quand elles comptent. N'invente pas d'ingrédient absent de la liste.`;
+
+  /* Steps are generated on demand, recipe by recipe: the week's menu appears
+     in seconds instead of waiting for every recipe's instructions. */
+  async function genererEtapes(recette) {
+    const settings = Store.getSettings();
+    if (!settings.apiKey) throw new Error('NO_API_KEY');
+    const payload = {
+      nom: recette.nom,
+      portions: recette.portions,
+      temps_preparation_min: recette.temps_preparation_min,
+      temps_cuisson_min: recette.temps_cuisson_min,
+      ingredients: recette.ingredients.map(i => `${i.nom_canonique} ${i.quantite} ${i.unite}`)
+    };
+    const text = await callApi(settings, [{ role: 'user', content: JSON.stringify(payload) }], SYSTEM_ETAPES);
+    const etapes = JSON.parse(stripFences(text));
+    if (!Array.isArray(etapes) || !etapes.length) throw new Error('Étapes illisibles');
+    return etapes.map(String);
+  }
+
+  return { generate, genererEtapes };
 })();

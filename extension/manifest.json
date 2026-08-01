@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Panier Repas",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Remplit ton panier de courses en ligne à partir de la liste générée par Panier Repas. Choisit le meilleur rapport qualité/prix et s'arrête toujours avant le paiement.",
   "permissions": [
     "storage",
@@ -15,7 +15,10 @@
     "https://*.auchan.fr/*",
     "https://*.houra.fr/*",
     "https://*.coursesu.com/*",
-    "https://world.openfoodfacts.org/*"
+    "https://world.openfoodfacts.org/*",
+    "https://*.github.io/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -41,6 +44,17 @@
         "panel.css"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.github.io/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "bridge.js"
+      ],
+      "run_at": "document_start"
     }
   ],
   "icons": {

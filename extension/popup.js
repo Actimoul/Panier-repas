@@ -28,12 +28,29 @@ listEl.addEventListener('input', () => {
 });
 delivEl.addEventListener('change', showSlot);
 
+const ENSEIGNES_NOM = {
+  intermarche: 'Intermarché', leclerc: 'E.Leclerc', carrefour: 'Carrefour',
+  auchan: 'Auchan', houra: 'Houra', coursesu: 'Courses U'
+};
+
 async function refreshStatus() {
   const data = await chrome.storage.local.get(['prList', 'prState']);
+  const etat = document.getElementById('etat');
+  const liste = data.prList;
+  if (etat) {
+    if (liste) {
+      const nom = ENSEIGNES_NOM[liste.enseigne] || 'ton magasin';
+      const fait = data.prState?.cursor || 0;
+      etat.textContent = `${liste.articles.length} articles pour ${nom}`
+        + (fait ? ` — ${fait} déjà traités.` : '. Ouvre le site pour commencer.');
+    } else {
+      etat.textContent = 'Aucune liste chargée. Utilise « Envoyer à l\'extension » dans l\'app.';
+    }
+  }
   if (data.prState) {
     statusEl.textContent = `Liste en cours : ${data.prState.cursor}/${data.prState.articles.length} articles traités.`;
   } else if (data.prList) {
-    statusEl.textContent = `Liste chargée : ${data.prList.articles.length} articles. Ouvre le site Leclerc.`;
+    statusEl.textContent = `Liste chargée : ${data.prList.articles.length} articles. Ouvre le site de ton magasin.`;
   } else {
     statusEl.textContent = 'Aucune liste chargée.';
   }
