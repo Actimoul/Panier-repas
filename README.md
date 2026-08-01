@@ -247,3 +247,71 @@ En fin de liste, **« Copier les choix pour l'app »** → dans le Panier,
 **« Importer les choix »**. Les produits retenus deviennent des associations
 permanentes (libellé, contenance déduite, prix, EAN, note, justification), donc
 les semaines suivantes n'ont plus à re-chercher.
+
+## v1.8 — Pilote automatique et adapter auto-calibrant
+
+### L'app cherche les références et les prix elle-même
+Un seul bouton : **« ▶ Remplir tout le panier »**. L'extension parcourt toute la
+liste sans intervention — pour chaque article elle lance la recherche, récolte
+jusqu'à 8 candidats, interroge Open Food Facts sur leur composition, les note,
+retient le meilleur, l'ajoute au panier et passe au suivant. L'état vit dans
+`chrome.storage`, donc le pilote survit aux navigations entre chaque recherche.
+
+Pause possible à tout moment, curseur prix ↔ santé modifiable en cours de route,
+et bouton « Choisir ce produit… » pour trancher soi-même parmi les 5 meilleurs.
+
+*Pourquoi l'extension et pas la PWA ?* Un site tiers refuse les requêtes venant
+d'un autre domaine (CORS), et le panier exige la session connectée. L'extension
+s'exécute dans la page : c'est le bras de l'app, pas un contournement.
+
+### Adapter auto-calibrant — plus aucun sélecteur à régler
+`extension/adapter.js` ne contient plus de classes CSS codées en dur. Il repère
+les prix dans la page, remonte l'arbre DOM jusqu'au niveau où ces prix ont des
+voisins de même signature structurelle (la grille de produits), puis extrait de
+chaque carte le titre, le prix, le prix au kilo, le code-barres et le bouton
+d'ajout — ce dernier reconnu par son intitulé, pas par sa classe.
+
+Validé sur deux structures HTML sans rien en commun. En cas de souci :
+`LeclercAdapter.diagnostic()` en console.
+
+### Score de pertinence
+Nouveau troisième axe, en **multiplicateur** des deux autres : le produit
+correspond-il vraiment à l'ingrédient demandé ? Sans lui, des « émincés de poulet
+panés surgelés » à 5,40 €/kg battaient du filet de poulet frais sur le seul
+critère du prix. Un produit transformé proposé pour un ingrédient brut
+(filet, pavé, escalope…) est désormais écarté.
+
+## v1.9 — Menus variés et vue tableau
+
+### Le problème
+La consigne de génération disait « batch cooking : 4 à 6 recettes maximum,
+portions multiples » — d'où quatre repas identiques dans la semaine. L'économie
+était cherchée par la répétition du même plat.
+
+### La correction : varier les plats, partager les ingrédients
+Nouveau réglage **Variété des menus** dans le Profil, en trois niveaux :
+
+| Niveau | Répétitions max d'un plat principal | Recettes distinctes |
+|---|---|---|
+| Batch cooking | 4 | 5 à 7 |
+| **Équilibré** (défaut) | 2 | 8 à 11 |
+| Variété maximale | 1 | 12 à 16 |
+
+La consigne dit maintenant explicitement que **l'économie se fait par le partage
+d'ingrédients entre recettes différentes, pas par la répétition du même plat** :
+un poulet acheté sert dans deux ou trois plats distincts, avec des techniques et
+des assaisonnements différents.
+
+### Audit automatique
+`PlanSchema.auditVariete()` contrôle le plan généré : plafond de répétitions,
+jamais le même plat deux jours de suite au même repas, et assez de plats
+principaux distincts. En cas d'échec, un tour de correction est demandé au
+modèle. Petits-déjeuners et collations ont un plafond plus souple — personne ne
+se plaint de manger deux fois le même porridge.
+
+### Vue tableau
+L'onglet Semaine s'ouvre désormais sur une grille jours × repas : chaque case
+donne le plat et ses calories, avec **une couleur par plat distinct** — les
+répétitions sautent aux yeux. Une ligne de totaux donne kcal et protéines par
+jour, et un badge annonce le nombre de plats différents. Touche une case pour
+sauter à la recette. Un sélecteur Tableau / Recettes bascule entre les deux vues.

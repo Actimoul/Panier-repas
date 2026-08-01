@@ -10,7 +10,13 @@ RÈGLES ABSOLUES :
 2. Chaque nom_canonique est en minuscules, au singulier, sans marque. Réutilise EXACTEMENT le même nom canonique pour un même ingrédient d'une recette à l'autre.
 3. Unités : uniquement "g", "ml", "piece". Convertis les mesures ménagères (1 c.à.s = 15 ml).
 4. fond_de_placard: true pour sel, poivre, huiles, épices, vinaigres, miel.
-5. Batch cooking : 4 à 6 recettes maximum, portions multiples. Étapes concises : 3 à 6 lignes par recette, une phrase chacune.
+5. VARIÉTÉ — règle centrale, à respecter avant toute autre considération d'économie :
+   - variete.recettes_min à variete.recettes_max recettes DISTINCTES pour la semaine.
+   - Une même recette n'apparaît JAMAIS plus de variete.max_repetitions fois dans le planning.
+   - Jamais le même plat deux jours de suite sur le même créneau de repas.
+   - Les petits-déjeuners et collations peuvent être plus répétitifs que les déjeuners et dîners, mais proposes-en au moins 2 variantes chacun.
+   - L'économie se fait par le PARTAGE D'INGRÉDIENTS entre recettes différentes, pas par la répétition du même plat : réutilise un même ingrédient acheté (un poulet, un chou, un pot de crème) dans 2 ou 3 recettes distinctes de la semaine, en variant la technique et l'assaisonnement.
+   Étapes concises : 3 à 6 lignes par recette, une phrase chacune.
 6. Le planning respecte les DLC : ingrédients peremption_type "tres_courte" cuisinés dans les 2-3 premiers jours.
 7. Les macros cumulées de chaque jour approchent kcal_cible_jour (±5 %) et atteignent proteines_cible_jour_g.
 8. Respecte exclusions sans exception.
@@ -100,10 +106,19 @@ STRUCTURE ATTENDUE (types) :
     const settings = Store.getSettings();
     if (!settings.apiKey) throw new Error('NO_API_KEY');
 
+    const v = Catalogue.VARIETES[profile.variete] || Catalogue.VARIETES.equilibre;
+    const varieteCfg = {
+      niveau: profile.variete || 'equilibre',
+      max_repetitions: v.maxRepetitions,
+      recettes_min: v.recettesMin,
+      recettes_max: v.recettesMax
+    };
+
     const { convives, presence, ...profilLite } = profile;
     const userPayload = {
       profil: profilLite,
       date_debut: dateDebut,
+      variete: varieteCfg || undefined,
       couverts_par_repas: couverts || undefined,
       jours_entrainement: joursSport && Object.keys(joursSport).length ? joursSport : undefined,
       interdits_absolus: interdits?.length ? interdits : undefined,
@@ -126,7 +141,7 @@ STRUCTURE ATTENDUE (types) :
 
     let plan = null;
     // Round 1-2: schema validity. Round 3: catalogue realism.
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 4; attempt++) {
       try {
         plan = JSON.parse(stripFences(text));
       } catch (err) {
@@ -135,7 +150,7 @@ STRUCTURE ATTENDUE (types) :
       const check = plan ? PlanSchema.validate(plan) : { valid: false, errors: ['invalid JSON'] };
 
       if (!check.valid) {
-        if (attempt >= 1) {
+        if (attempt >= 2) {
           throw new Error(`Plan invalide après correction : ${check.errors.slice(0, 5).join(' | ')}`);
         }
         onStatus?.('Format à corriger, nouvelle tentative… (2/3)');
@@ -148,9 +163,21 @@ STRUCTURE ATTENDUE (types) :
         continue;
       }
 
-      // valid JSON — now check store availability, once
+      // valid JSON — now check variety, then store availability
+      const varAudit = PlanSchema.auditVariete(plan, varieteCfg.max_repetitions);
+      if (!varAudit.ok && attempt < 2) {
+        onStatus?.('Trop de répétitions, diversification… (2/3)');
+        messages.push({ role: 'assistant', content: text });
+        messages.push({
+          role: 'user',
+          content: `Le plan est trop répétitif : ${varAudit.problemes.slice(0, 6).join(' ; ')}. Ajoute des recettes distinctes (${varieteCfg.recettes_min} à ${varieteCfg.recettes_max} au total) en réutilisant les ingrédients déjà achetés dans de NOUVELLES recettes plutôt qu'en répétant les mêmes plats. Renvoie le JSON complet corrigé, uniquement le JSON.`
+        });
+        text = await callApi(settings, messages, system);
+        continue;
+      }
+
       const odd = Catalogue.suspects(plan, matches, unavailable);
-      if (odd.length === 0 || attempt >= 2) {
+      if (odd.length === 0 || attempt >= 3) {
         if (odd.length) console.warn('Ingrédients hors catalogue conservés :', odd);
         plan.hors_catalogue = odd.length ? odd : undefined;
         return plan;

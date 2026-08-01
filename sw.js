@@ -1,5 +1,5 @@
 /* Cache-first for the app shell, network-only for the Anthropic API. */
-const CACHE = 'panier-repas-v9';
+const CACHE = 'panier-repas-v11';
 const SHELL = [
   './',
   './index.html',

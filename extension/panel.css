@@ -58,3 +58,7 @@
   background: #2F6B3C; color: #fff; border: none; border-radius: 8px;
   padding: 8px; cursor: pointer; font-size: 12px; font-weight: 600;
 }
+#pr-panel .pr-bar { height: 4px; background: #E8E6DF; border-radius: 2px; margin: 8px 0; overflow: hidden; }
+#pr-panel .pr-bar-fill { height: 100%; background: #2F6B3C; transition: width .3s; }
+#pr-panel .pr-wide.pr-stop { background: #D2481F; }
+#pr-panel .pr-wide.pr-stop:hover { background: #A83816; }

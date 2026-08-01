@@ -6,8 +6,6 @@
   let currentTab = 'semaine';
   let generating = false;
 
-  const DAYS = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
-  const REPAS_LABELS = { petit_dejeuner: 'Petit-déj', dejeuner: 'Déjeuner', collation: 'Collation', diner: 'Dîner' };
   const LECLERC_SEARCH = (q) => `https://www.leclercdrive.fr/recherche.aspx?TexteRecherche=${encodeURIComponent(q)}`;
 
   /* ---------- helpers ---------- */
@@ -33,7 +31,12 @@
     return d.toISOString().slice(0, 10);
   }
 
+
   /* ---------- tab: Semaine ---------- */
+  const DAY_LABELS = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
+  const MEAL_LABELS = { petit_dejeuner: 'Petit-déj', dejeuner: 'Déjeuner', collation: 'Collation', diner: 'Dîner' };
+  let semaineVue = 'tableau';   // 'tableau' | 'recettes'
+
   function renderSemaine() {
     const plan = Store.getPlan();
     if (generating) {
@@ -51,10 +54,19 @@
       return;
     }
 
-    // daily macros from planning
     const byId = Object.fromEntries(plan.recettes.map(r => [r.id, r]));
+    const planning = plan.planning || [];
+
+    /* Which meal rows and which days actually have something planned. */
+    const mealsUsed = Store.REPAS_TYPES.filter(rt => planning.some(p => p.repas === rt));
+    const daysUsed = [...new Set(planning.map(p => p.jour))].sort((a, b) => a - b);
+
+    /* Colour code: one hue per distinct recipe, so repetitions jump out. */
+    const recipeOrder = [...new Set(planning.map(p => p.recette_id))];
+    const hueOf = (id) => (recipeOrder.indexOf(id) * 47) % 360;
+
     const dayTotals = {};
-    for (const p of plan.planning || []) {
+    for (const p of planning) {
       const r = byId[p.recette_id];
       if (!r) continue;
       const t = dayTotals[p.jour] || (dayTotals[p.jour] = { kcal: 0, prot: 0 });
@@ -62,57 +74,119 @@
       t.prot += r.macros_par_portion.proteines_g * (p.portions || 1);
     }
 
-    const pills = Object.keys(dayTotals).sort((a, b) => a - b).map(j => `
-      <div class="day-pill">
-        <div class="d">${DAYS[j - 1] || 'J' + j}</div>
-        <div class="kcal">${Math.round(dayTotals[j].kcal)}</div>
-        <div class="prot">${Math.round(dayTotals[j].prot)}g prot</div>
-      </div>`).join('');
+    const weightCard = (() => {
+      const weights = Store.getWeights();
+      if (!weights.length) return '';
+      const last = weights[weights.length - 1];
+      const trend = Health.weeklyTrend(weights);
+      const trendTxt = trend === null ? '' : ` · ${trend >= 0 ? '+' : ''}${trend.toFixed(1)} kg/sem`;
+      return `<div class="card" style="display:flex;justify-content:space-between;align-items:baseline">
+        <span style="font-family:var(--font-display);font-weight:700;font-size:0.9rem">⚖️ ${last.kg.toFixed(1)} kg</span>
+        <span class="hint" style="margin:0">${esc(last.date)}${trendTxt}</span></div>`;
+    })();
 
+    const horsCat = plan.hors_catalogue || [];
+    const horsCatCard = horsCat.length
+      ? `<div class="card delivery warn"><b>⚠️ ${horsCat.length} ingrédient(s) peut-être introuvable(s)</b>
+          <p class="hint" style="margin:6px 0 0">${horsCat.map(esc).join(', ')}. Si tu ne les trouves pas, marque-les « introuvable » depuis le Panier.</p></div>`
+      : '';
+
+    /* Variety summary — the whole point of the table view. */
+    const nbDistinctes = new Set(planning.map(p => p.recette_id)).size;
+    const varieteBadge = `<span class="badge ${nbDistinctes >= 8 ? 'ok' : nbDistinctes >= 5 ? '' : 'warn'}">${nbDistinctes} plats différents</span>`;
+
+    /* --- the menu table --- */
+    const table = `
+      <div class="menu-wrap">
+        <table class="menu">
+          <thead>
+            <tr><th class="corner"></th>
+              ${daysUsed.map(j => `<th>${DAY_LABELS[j - 1] || 'J' + j}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${mealsUsed.map(rt => `
+              <tr>
+                <th class="row-h">${MEAL_LABELS[rt] || rt}</th>
+                ${daysUsed.map(j => {
+                  const slot = planning.find(p => p.jour === j && p.repas === rt);
+                  if (!slot) return '<td class="empty-cell">—</td>';
+                  const r = byId[slot.recette_id];
+                  if (!r) return '<td class="empty-cell">?</td>';
+                  const h = hueOf(slot.recette_id);
+                  return `<td class="meal" data-rid="${esc(r.id)}" tabindex="0" role="button"
+                            style="--h:${h}" title="${esc(r.nom)}">
+                    <span class="meal-name">${esc(r.nom)}</span>
+                    <span class="meal-macro">${r.macros_par_portion.kcal} kcal</span>
+                  </td>`;
+                }).join('')}
+              </tr>`).join('')}
+            <tr class="totals">
+              <th class="row-h">Total</th>
+              ${daysUsed.map(j => {
+                const t = dayTotals[j] || { kcal: 0, prot: 0 };
+                return `<td><b>${Math.round(t.kcal)}</b><span>${Math.round(t.prot)}g prot</span></td>`;
+              }).join('')}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="hint">Touche un plat pour voir sa recette. Chaque couleur = un plat différent.</p>`;
+
+    /* --- recipe cards (secondary view) --- */
     const recipes = plan.recettes.map(r => {
       const ings = r.ingredients.map(i =>
         `<li>${esc(i.nom_canonique)} — <span style="font-family:var(--font-mono)">${Aggregator.fmtQty(i.quantite, i.unite)}</span></li>`).join('');
       const steps = r.etapes.map(e => `<li>${esc(e)}</li>`).join('');
-      const slots = (plan.planning || [])
-        .filter(p => p.recette_id === r.id)
-        .map(p => `${DAYS[p.jour - 1]} ${REPAS_LABELS[p.repas] || p.repas}`)
-        .join(' · ');
+      const slots = planning.filter(p => p.recette_id === r.id)
+        .map(p => `${DAY_LABELS[p.jour - 1]} ${MEAL_LABELS[p.repas] || p.repas}`).join(' · ');
       return `
-        <div class="card recipe">
+        <div class="card recipe" id="rec-${esc(r.id)}" style="border-left-color:hsl(${hueOf(r.id)} 45% 38%)">
           <h3>${esc(r.nom)}</h3>
           <div class="meta">${r.portions} portions · ${r.macros_par_portion.kcal} kcal · ${r.macros_par_portion.proteines_g}g prot / portion${slots ? ' · ' + esc(slots) : ''}</div>
           <details><summary>Ingrédients & étapes</summary><ul>${ings}</ul><ol>${steps}</ol></details>
         </div>`;
     }).join('');
 
-    const weights = Store.getWeights();
-    let weightCard = '';
-    if (weights.length) {
-      const last = weights[weights.length - 1];
-      const trend = Health.weeklyTrend(weights);
-      const trendTxt = trend === null ? '' : ` · ${trend >= 0 ? '+' : ''}${trend.toFixed(1)} kg/sem`;
-      weightCard = `<div class="card" style="display:flex;justify-content:space-between;align-items:baseline">
-        <span style="font-family:var(--font-display);font-weight:700;font-size:0.9rem">⚖️ ${last.kg.toFixed(1)} kg</span>
-        <span class="hint" style="margin:0">${esc(last.date)}${trendTxt}</span>
-      </div>`;
-    }
-
-    const horsCat = plan.hors_catalogue || [];
-    const horsCatCard = horsCat.length
-      ? `<div class="card delivery warn"><b>⚠️ ${horsCat.length} ingrédient(s) peut-être introuvable(s)</b>
-          <p class="hint" style="margin:6px 0 0">${horsCat.map(esc).join(', ')}. Si tu ne les trouves pas sur Leclerc, marque-les « introuvable » depuis le Panier : ils seront bannis des prochaines semaines.</p></div>`
-      : '';
-
     view.innerHTML = `
-      <div class="section-title">Semaine du ${esc(plan.semaine.date_debut)}</div>
+      <div class="section-title">Semaine du ${esc(plan.semaine.date_debut)} ${varieteBadge}</div>
       ${weightCard}
       ${horsCatCard}
-      <div class="day-macros">${pills}</div>
-      ${recipes}
+      <div class="seg">
+        <button class="seg-btn ${semaineVue === 'tableau' ? 'on' : ''}" data-vue="tableau">Tableau</button>
+        <button class="seg-btn ${semaineVue === 'recettes' ? 'on' : ''}" data-vue="recettes">Recettes</button>
+      </div>
+      <div id="vue-tableau" ${semaineVue === 'tableau' ? '' : 'hidden'}>${table}</div>
+      <div id="vue-recettes" ${semaineVue === 'recettes' ? '' : 'hidden'}>${recipes}</div>
       <div class="btn-row">
         <button class="btn ghost" id="btn-regenerate">Régénérer</button>
         <button class="btn primary" id="btn-to-basket">Voir le panier →</button>
       </div>`;
+
+    view.querySelectorAll('.seg-btn').forEach(b => b.addEventListener('click', () => {
+      semaineVue = b.dataset.vue;
+      renderSemaine();
+    }));
+
+    /* Tapping a cell opens that recipe in the recipe view. */
+    view.querySelectorAll('.meal').forEach(cell => {
+      const open = () => {
+        semaineVue = 'recettes';
+        renderSemaine();
+        const target = document.getElementById(`rec-${cell.dataset.rid}`);
+        if (target) {
+          target.querySelector('details')?.setAttribute('open', '');
+          target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          target.classList.add('flash');
+          setTimeout(() => target.classList.remove('flash'), 1200);
+        }
+      };
+      cell.addEventListener('click', open);
+      cell.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+      });
+    });
+
     document.getElementById('btn-regenerate').addEventListener('click', generatePlan);
     document.getElementById('btn-to-basket').addEventListener('click', () => switchTab('panier'));
   }
@@ -686,6 +760,13 @@
           </select>
         </label>
         <p class="hint" id="p-complexite-desc"></p>
+        <label>Variété des menus
+          <select id="p-variete">
+            ${Object.entries(Catalogue.VARIETES).map(([k, v]) =>
+              `<option value="${k}">${esc(v.label)}</option>`).join('')}
+          </select>
+        </label>
+        <p class="hint" id="p-variete-desc"></p>
         <label style="margin-bottom:6px">Types de cuisine</label>
         <div class="chips" id="p-cuisines">
           ${Catalogue.CUISINES.map(c => `
@@ -740,6 +821,15 @@
     };
     showComplexiteDesc();
     complexiteSel.addEventListener('change', showComplexiteDesc);
+
+    const varieteSel = document.getElementById('p-variete');
+    varieteSel.value = p.variete || 'equilibre';
+    const showVarieteDesc = () => {
+      document.getElementById('p-variete-desc').textContent =
+        Catalogue.VARIETES[varieteSel.value]?.desc || '';
+    };
+    showVarieteDesc();
+    varieteSel.addEventListener('change', showVarieteDesc);
 
     /* Read every person card back into objects. */
     function readPeople() {
@@ -881,6 +971,7 @@
         },
         cibles_auto: document.getElementById('p-auto').checked,
         complexite: document.getElementById('p-complexite').value,
+        variete: document.getElementById('p-variete').value,
         cuisines: [...view.querySelectorAll('.chip[data-cuisine].on')].map(c => c.dataset.cuisine),
         convives,
         presence: base.presence

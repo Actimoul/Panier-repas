@@ -113,8 +113,8 @@ const Scoring = (() => {
 
     if (!off) {
       // Unpackaged fresh produce: usually the healthiest option available.
-      const brut = /\b(frais|fraiche|entier|filet|pave|escalope|cru|nature|brut)\b/.test(label);
-      const transforme = /\b(pane|frit|nugget|cordon|sauce|creme|sucre|confit|fume|marine|prepare|surgele\s+pret)\b/.test(label);
+      const brut = /\b(frais|fraiche|fraiches|entiers?|filets?|paves?|escalopes?|cru[es]?|nature|brut[es]?)\b/.test(label);
+      const transforme = /\b(panes?|frites?|nuggets?|cordons?|sauces?|cremes?|sucres?|confits?|fumes?|marines?|prepares?|emince[es]?\s+\w*panes?)\b/.test(label);
       let base = brut ? 72 : 50;
       if (isBio) base += 10;
       if (transforme) base -= 25;
@@ -161,18 +161,46 @@ const Scoring = (() => {
     return { score: Math.round(score), source: 'Open Food Facts', details };
   }
 
+  /* --- Pertinence : le produit correspond-il à l'ingrédient ? ------ */
+
+  const MOTS_VIDES = new Set(['de','du','des','le','la','les','a','au','aux','en','et','bio','frais','sans','avec','pour','par']);
+
+  function motsCles(nom) {
+    return deaccent(nom).split(/[^a-z0-9]+/)
+      .filter(w => w.length > 2 && !MOTS_VIDES.has(w));
+  }
+
+  /* 0-100 : proportion des mots-clés de l'ingrédient retrouvés dans le
+     libellé du produit. Un produit qui ne partage aucun mot-clé n'est pas
+     le bon produit, quel que soit son prix. */
+  function pertinence(candidate, nomCanonique) {
+    if (!nomCanonique) return 100;
+    const mots = motsCles(nomCanonique);
+    if (!mots.length) return 100;
+    const label = deaccent(candidate.libelle || '');
+    const trouves = mots.filter(m => label.includes(m.slice(0, Math.max(4, m.length - 1))));
+    let score = (trouves.length / mots.length) * 100;
+    // une forme transformée n'est pas l'ingrédient brut demandé
+    const demandeBrut = /\b(filet|pave|escalope|steak|cuisse|entier|frais)\b/.test(deaccent(nomCanonique));
+    const offreTransformee = /\b(panes?|nuggets?|cordons?|frites?|beignets?|marines?|farcis?)\b/.test(label);
+    if (demandeBrut && offreTransformee) score -= 55;
+    return Math.max(0, Math.round(score));
+  }
+
   /* --- Combined ranking -------------------------------------------- */
 
   /* prefSante: 0 = prix seul, 1 = santé seule. 0.5 = équilibre.
      budgetMax: optional € ceiling per pack; over it, the candidate is
      kept but heavily penalized rather than removed (it may be the only one). */
-  function rank(candidates, { prefSante = 0.5, budgetMax = null } = {}) {
-    const withPrice = candidates.map(c => ({ c, up: unitPrice(c), health: healthScore(c) }));
+  function rank(candidates, { prefSante = 0.5, budgetMax = null, nomCanonique = null } = {}) {
+    const withPrice = candidates.map(c => ({
+      c, up: unitPrice(c), health: healthScore(c), pert: pertinence(c, nomCanonique)
+    }));
     const prices = withPrice.map(x => x.up).filter(v => v > 0);
     const min = prices.length ? Math.min(...prices) : null;
     const max = prices.length ? Math.max(...prices) : null;
 
-    const scored = withPrice.map(({ c, up, health }) => {
+    const scored = withPrice.map(({ c, up, health, pert }) => {
       // price score: cheapest = 100, most expensive = 30 (never 0 — price is
       // one criterion among others, not a disqualification)
       let priceScore = 60;
@@ -182,8 +210,11 @@ const Scoring = (() => {
         priceScore = 100;
       }
 
-      let score = priceScore * (1 - prefSante) + health.score * prefSante;
+      // La pertinence est un multiplicateur, pas un critère parmi d'autres :
+      // le produit le moins cher du monde ne sert à rien si ce n'est pas le bon.
+      let score = (priceScore * (1 - prefSante) + health.score * prefSante) * (pert / 100);
       let alerte = null;
+      if (pert < 50) alerte = "correspond mal à l'ingrédient";
       if (budgetMax && c.prix_eur > budgetMax) {
         score -= 25;
         alerte = `au-dessus du budget (${budgetMax.toFixed(2)} €)`;
@@ -194,6 +225,7 @@ const Scoring = (() => {
         prix_unitaire: up,
         score_prix: Math.round(priceScore),
         score_sante: health.score,
+        score_pertinence: pert,
         sante_source: health.source,
         sante_details: health.details,
         score: Math.round(score),
@@ -214,13 +246,15 @@ const Scoring = (() => {
       bits.push(`${winner.prix_unitaire.toFixed(2)} €/${unit}`);
     }
     if (winner.sante_details.length) bits.push(winner.sante_details.join(', '));
-    else if (winner.sante_source === 'libellé') bits.push('produit brut');
+    else if (winner.sante_source === 'libellé') bits.push('composition inconnue');
     if (all && all.length > 1) bits.push(`meilleur sur ${all.length} candidats`);
     if (winner.alerte) bits.push(`⚠️ ${winner.alerte}`);
     return bits.join(' · ');
   }
 
-  return { fetchOFF, enrich, rank, explain, healthScore, unitPrice, packSize };
+  return { fetchOFF, enrich, rank, explain, healthScore, pertinence, unitPrice, packSize };
 })();
 
 if (typeof module !== 'undefined') module.exports = Scoring;
+
+globalThis.Scoring = Scoring;

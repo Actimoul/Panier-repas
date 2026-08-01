@@ -68,6 +68,7 @@ const Store = (() => {
       exclusions: [],
       preferences_libres: '',
       complexite: 'simple',
+      variete: 'equilibre',   // batch | equilibre | maxi
       cuisines: [],
       metrics: { poids_kg: null, taille_cm: null, age: null, sexe: 'homme', activite: 'modere' },
       cibles_auto: true,

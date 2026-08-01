@@ -1,112 +1,206 @@
 /* ============================================================
-   LECLERC SITE ADAPTER
+   LECLERC SITE ADAPTER — auto-calibrating
    ------------------------------------------------------------
-   C'est LE fichier à ajuster après ton repérage DevTools.
-   Tout le reste de l'extension est indépendant du site.
+   Ne demande AUCUN réglage manuel. Au lieu de sélecteurs codés
+   en dur (qui cassent à chaque refonte du site), l'adapter
+   découvre la structure de la page :
 
-   Étapes du repérage (une seule fois) :
-   1. Connecte-toi sur ton drive/livraison Leclerc.
-   2. Ouvre DevTools > Réseau (filtre XHR/Fetch).
-   3. Fais une recherche produit → note l'URL d'API de recherche
-      et la forme de la réponse JSON (id produit, libellé, prix).
-   4. Ajoute un produit au panier → note l'appel (URL, méthode,
-      corps, en-têtes type token CSRF).
-   5. Reporte ça ci-dessous. Si le site n'a pas d'API exploitable,
-      remplis plutôt les sélecteurs DOM (mode "click").
+   1. il repère tous les nœuds texte contenant un prix (« 4,20 € »)
+   2. il remonte l'arbre DOM jusqu'à trouver le niveau où ces
+      nœuds ont des voisins de même signature (mêmes classes) —
+      c'est la grille de produits
+   3. dans chaque carte, il identifie le titre (texte le plus
+      long hors prix), le prix, le prix au kg, le code-barres
+      et le bouton d'ajout (par son intitulé, pas sa classe)
+
+   Si le site expose une API JSON interne, renseigne-la dans
+   `api` plus bas : elle sera utilisée en priorité.
    ============================================================ */
 const LeclercAdapter = {
-  /* URL de recherche affichable (fallback universel, fonctionne toujours). */
+
+  /* Optionnel : si tu repères une API interne, remplis ceci. */
+  api: {
+    enabled: false,
+    searchUrl: null,      // ex. (q) => `/api/recherche?q=${encodeURIComponent(q)}`
+    addUrl: null,         // ex. '/api/panier/ajouter'
+    mapProduct: null      // ex. (p) => ({ libelle: p.nom, prix_eur: p.prix, ean: p.ean })
+  },
+
   searchPageUrl(query) {
     return `${location.origin}/recherche.aspx?TexteRecherche=${encodeURIComponent(query)}`;
   },
 
-  /* --- MODE CLICK (DOM) — à vérifier/ajuster --- */
-  selectors: {
-    // TODO: vérifier ces sélecteurs sur TON magasin (ils varient selon la version du site)
-    searchInput: 'input[type="search"], input[name*="echerche"]',
-    productCard: '[class*="produit"], [class*="product-card"]',
-    productTitle: '[class*="libelle"], [class*="title"]',
-    productPrice: '[class*="prix"], [class*="price"]',
-    productUnitPrice: '[class*="prixUnitaire"], [class*="unit-price"], [class*="perKg"]',
-    productBrand: '[class*="marque"], [class*="brand"]',
-    addToCartBtn: 'button[class*="ajout"], button[title*="jouter"]'
-  },
+  /* --- Détection générique -------------------------------- */
 
-  /* Parse "4,20 €" / "€4.20" / "14,00 €/kg" into a number. */
+  PRICE_RE: /(\d{1,3}(?:[.,]\d{1,2}))\s*€|€\s*(\d{1,3}(?:[.,]\d{1,2}))/,
+  UNIT_PRICE_RE: /(\d+(?:[.,]\d+)?)\s*€\s*\/\s*(kg|l|litre|pi[eè]ce|unit)/i,
+  ADD_LABEL_RE: /ajouter|j'achète|au panier|\+\s*panier/i,
+
   parsePrice(text) {
     if (!text) return null;
-    const m = text.replace(/\s/g, '').match(/(\d+(?:[.,]\d+)?)/);
+    const m = text.match(this.PRICE_RE);
+    if (!m) return null;
+    return parseFloat((m[1] || m[2]).replace(',', '.'));
+  },
+
+  parseUnitPrice(text) {
+    if (!text) return null;
+    const m = text.match(this.UNIT_PRICE_RE);
     return m ? parseFloat(m[1].replace(',', '.')) : null;
   },
 
-  /* Try hard to find an EAN: data attributes, then any 13-digit run in the
-     card's markup (product links and images usually embed it). */
+  /* Signature structurelle d'un élément : sert à reconnaître
+     les frères de même nature (les cartes d'une même grille). */
+  signature(el) {
+    const cls = (el.className || '').toString().split(/\s+/)
+      .filter(c => c && !/^(is-|has-|active|selected)/.test(c))
+      .slice(0, 3).sort().join('.');
+    return `${el.tagName}|${cls}`;
+  },
+
+  /* Trouve le conteneur de carte produit : on remonte depuis un
+     prix jusqu'au premier ancêtre ayant ≥2 frères de même
+     signature et contenant assez de texte pour être une carte. */
+  findCardFor(priceEl) {
+    let el = priceEl;
+    for (let depth = 0; depth < 8 && el && el.parentElement; depth++) {
+      const parent = el.parentElement;
+      const sig = this.signature(el);
+      const siblings = [...parent.children].filter(c => this.signature(c) === sig);
+      const text = (el.textContent || '').trim();
+      if (siblings.length >= 2 && text.length > 12 && text.length < 400) {
+        return { card: el, siblings };
+      }
+      el = parent;
+    }
+    return null;
+  },
+
+  /* Repère la grille de produits de la page courante. */
+  findProductGrid() {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    const priceNodes = [];
+    let node;
+    while ((node = walker.nextNode())) {
+      const t = node.nodeValue;
+      if (t && t.includes('€') && this.PRICE_RE.test(t)) {
+        const el = node.parentElement;
+        if (el && el.offsetParent !== null) priceNodes.push(el);
+      }
+      if (priceNodes.length > 60) break;
+    }
+    if (!priceNodes.length) return [];
+
+    // La grille la plus fréquemment retrouvée est la bonne.
+    const tally = new Map();
+    for (const p of priceNodes) {
+      const found = this.findCardFor(p);
+      if (!found) continue;
+      const key = this.signature(found.card);
+      if (!tally.has(key)) tally.set(key, { count: 0, cards: found.siblings });
+      tally.get(key).count++;
+    }
+    if (!tally.size) return [];
+    const best = [...tally.values()].sort((a, b) => b.count - a.count)[0];
+    return best.cards;
+  },
+
+  /* --- Extraction ----------------------------------------- */
+
+  extractTitle(card) {
+    const heading = card.querySelector('h1,h2,h3,h4,a[title],img[alt]');
+    if (heading) {
+      const v = heading.getAttribute?.('title') || heading.getAttribute?.('alt') || heading.textContent;
+      if (v && v.trim().length > 4) return v.trim().slice(0, 120);
+    }
+    // sinon : le plus long fragment de texte qui n'est pas un prix
+    const fragments = [...card.querySelectorAll('*')]
+      .map(e => (e.childElementCount === 0 ? (e.textContent || '').trim() : ''))
+      .filter(t => t.length > 5 && !t.includes('€') && !this.ADD_LABEL_RE.test(t));
+    fragments.sort((a, b) => b.length - a.length);
+    return (fragments[0] || card.textContent.trim()).slice(0, 120);
+  },
+
   extractEan(card) {
-    const attrs = ['data-ean', 'data-gtin', 'data-barcode', 'data-sku', 'data-id-produit'];
+    const attrs = ['data-ean', 'data-gtin', 'data-barcode', 'data-sku', 'data-id-produit', 'data-product-id'];
     for (const a of attrs) {
       const v = card.getAttribute?.(a) || card.querySelector(`[${a}]`)?.getAttribute(a);
       if (v && /^\d{8,14}$/.test(v.trim())) return v.trim();
     }
-    const m = card.innerHTML.match(/\b(\d{13})\b/);
-    return m ? m[1] : null;
+    const href = card.querySelector('a[href]')?.getAttribute('href') || '';
+    const inHref = href.match(/\b(\d{13})\b/);
+    if (inHref) return inHref[1];
+    const inHtml = card.innerHTML.match(/\b(\d{13})\b/);
+    return inHtml ? inHtml[1] : null;
   },
 
-  /* Harvest every product on the current search results page.
-     Returns [{ libelle, marque, prix_eur, prix_par_kg, quantite_texte, ean, index }] */
+  findAddButton(card) {
+    const clickables = [...card.querySelectorAll(
+      'button, [role="button"], input[type="submit"], input[type="button"], a, [class*="ajout"], [class*="add"], [class*="cta"], [onclick]'
+    )];
+    const labelled = clickables.find(b => {
+      const label = `${b.textContent || ''} ${b.getAttribute('title') || ''} ${b.getAttribute('aria-label') || ''} ${b.value || ''} ${b.className || ''}`;
+      return this.ADD_LABEL_RE.test(label);
+    });
+    if (labelled) return labelled;
+    // repli : un cliquable non-lien dans la carte est presque toujours l'ajout panier
+    return clickables.find(b => b.tagName !== 'A') || null;
+  },
+
+  /* Récolte tous les produits de la page de résultats courante. */
   harvestCandidates(limit = 8) {
-    const cards = [...document.querySelectorAll(this.selectors.productCard)].slice(0, limit);
+    const cards = this.findProductGrid().slice(0, limit);
     return cards.map((card, index) => {
-      const txt = (sel) => card.querySelector(sel)?.textContent?.trim() || '';
-      const libelle = txt(this.selectors.productTitle) || card.textContent.trim().slice(0, 80);
+      const text = card.textContent || '';
       return {
         index,
-        libelle,
-        marque: txt(this.selectors.productBrand) || null,
-        prix_eur: this.parsePrice(txt(this.selectors.productPrice)),
-        prix_par_kg: this.parsePrice(txt(this.selectors.productUnitPrice)),
-        quantite_texte: libelle,
+        _card: card,
+        libelle: this.extractTitle(card),
+        marque: null,
+        prix_eur: this.parsePrice(text),
+        prix_par_kg: this.parseUnitPrice(text),
+        quantite_texte: this.extractTitle(card),
         ean: this.extractEan(card)
       };
-    }).filter(c => c.libelle);
+    }).filter(c => c.libelle && c.prix_eur);
   },
 
-  /* Add the Nth product of the current results page to the cart. */
-  async addByIndex(index) {
-    const cards = [...document.querySelectorAll(this.selectors.productCard)];
-    const card = cards[index];
-    if (!card) throw new Error(`Produit #${index + 1} introuvable sur la page`);
-    const btn = card.querySelector(this.selectors.addToCartBtn);
-    if (!btn) throw new Error('Bouton "Ajouter" introuvable (sélecteur addToCartBtn à ajuster ?)');
-    const title = card.querySelector(this.selectors.productTitle)?.textContent?.trim() || '(libellé inconnu)';
+  /* Ajoute au panier le produit d'indice donné.
+     `candidates` peut être trié : on retrouve la carte par son champ .index,
+     jamais par sa position dans le tableau. */
+  async addByIndex(index, candidates) {
+    const match = Array.isArray(candidates)
+      ? candidates.find(c => c.index === index)
+      : null;
+    const card = match?._card || this.findProductGrid()[index];
+    if (!card) throw new Error(`Produit #${index + 1} introuvable`);
+    const btn = this.findAddButton(card);
+    if (!btn) throw new Error('Bouton « Ajouter » non détecté sur la fiche');
+    const libelle = this.extractTitle(card);
     btn.click();
-    await new Promise(r => setTimeout(r, 800));
-    return { ok: true, libelle: title };
+    await new Promise(r => setTimeout(r, 900));
+    return { ok: true, libelle };
   },
 
-  /* Ajoute au panier le premier résultat de la page de recherche courante.
-     Retourne { ok, libelle } ou lève une erreur explicite. */
   async addFirstResultFromCurrentPage() {
     return this.addByIndex(0);
-  }
-
-  /* --- MODE API (optionnel, plus fiable) ---
-     Si ton repérage révèle une API JSON interne, implémente ici :
-
-  async apiSearch(query) {
-    const res = await fetch(`/api/recherche?q=${encodeURIComponent(query)}`, { credentials: 'include' });
-    if (!res.ok) throw new Error(`search API ${res.status}`);
-    return res.json();
   },
 
-  async apiAddToCart(productId, qty) {
-    const res = await fetch('/api/panier/ajouter', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: productId, quantite: qty })
-    });
-    if (!res.ok) throw new Error(`addToCart API ${res.status}`);
-    return res.json();
+  /* Diagnostic : à lancer dans la console si quelque chose cloche. */
+  diagnostic() {
+    const cards = this.findProductGrid();
+    console.log(`[Panier Repas] ${cards.length} cartes détectées`);
+    cards.slice(0, 3).forEach((c, i) => console.log(` #${i}`, {
+      titre: this.extractTitle(c),
+      prix: this.parsePrice(c.textContent),
+      prixKg: this.parseUnitPrice(c.textContent),
+      ean: this.extractEan(c),
+      bouton: !!this.findAddButton(c)
+    }));
+    return cards.length;
   }
-  */
 };
+
+/* Exposition explicite : les fichiers de content script partagent le même
+   monde isolé, mais on ne dépend pas de la portée lexicale de haut niveau. */
+globalThis.LeclercAdapter = LeclercAdapter;

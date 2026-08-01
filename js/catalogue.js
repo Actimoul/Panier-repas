@@ -81,6 +81,26 @@ const Catalogue = (() => {
     'mexicaine', 'moyen-orientale', 'américaine', 'nord-africaine'
   ];
 
+  /* Variety levels: how much repetition is acceptable across the week.
+     maxRepetitions = how many times one recipe may appear in the planning. */
+  const VARIETES = {
+    batch: {
+      label: 'Batch cooking (peu de vaisselle)',
+      desc: 'peu de recettes, cuisinées en grande quantité — économique et rapide',
+      maxRepetitions: 4, recettesMin: 5, recettesMax: 7
+    },
+    equilibre: {
+      label: 'Équilibré',
+      desc: 'chaque plat revient au plus 2 fois, ingrédients partagés entre recettes',
+      maxRepetitions: 2, recettesMin: 8, recettesMax: 11
+    },
+    maxi: {
+      label: 'Variété maximale',
+      desc: 'un plat différent à chaque repas — plus de préparation',
+      maxRepetitions: 1, recettesMin: 12, recettesMax: 16
+    }
+  };
+
   const COMPLEXITES = {
     express: { label: 'Express (≤ 20 min)', max_min: 20, desc: 'peu d\'étapes, une seule poêle/casserole, pas de four long' },
     simple: { label: 'Simple (≤ 40 min)', max_min: 40, desc: 'techniques de base, jusqu\'à 8 étapes' },
@@ -143,5 +163,5 @@ const Catalogue = (() => {
     return [...out];
   }
 
-  return { VOCABULAIRE, CUISINES, COMPLEXITES, flat, promptBlock, suspects };
+  return { VOCABULAIRE, CUISINES, COMPLEXITES, VARIETES, flat, promptBlock, suspects };
 })();

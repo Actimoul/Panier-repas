@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Panier Repas → Leclerc",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Remplit ton panier Leclerc Drive à partir de la liste générée par Panier Repas. S'arrête toujours avant le paiement.",
   "permissions": [
     "storage",

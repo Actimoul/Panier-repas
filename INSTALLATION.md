@@ -5,7 +5,7 @@ Trois blocs indépendants. Le bloc A suffit pour une app fonctionnelle.
 | Bloc | Quoi | Où | Durée | Requis ? |
 |---|---|---|---|---|
 | A | PWA sur GitHub Pages + clé API | ordi puis iPhone | 15 min | **oui** |
-| B | Extension Chrome + repérage Leclerc | ordi | 20 min | pour le remplissage auto |
+| B | Extension Chrome (rien à configurer) | ordi | 5 min | pour le remplissage auto |
 | C | Worker + Raccourci iOS (poids) | ordi puis iPhone | 20 min | optionnel |
 
 ---
@@ -153,45 +153,38 @@ génération suivante réutilise ces restes en priorité.
 3. **Charger l'extension non empaquetée** → sélectionne le dossier `extension/`.
 4. Épingle-la dans la barre d'outils (icône puzzle → punaise).
 
-### B2. Repérage du site Leclerc — l'étape à faire toi-même
-Impossible pour moi de deviner les sélecteurs sans une session connectée à
-ton magasin. Ça se fait une fois, en 5 minutes.
+### B2. Rien à configurer
+L'adapter se calibre tout seul. Il ne cherche pas des classes CSS codées en dur
+(qui cassent à chaque refonte du site) : il repère les prix sur la page, remonte
+l'arbre HTML jusqu'au niveau où ces prix ont des voisins de même structure —
+c'est la grille de produits — puis extrait de chaque carte le titre, le prix, le
+prix au kilo, le code-barres et le bouton d'ajout (reconnu par son intitulé).
 
-1. Connecte-toi sur ton drive/livraison Leclerc.
-2. **F12** → onglet **Réseau** → filtre **Fetch/XHR** → coche *Conserver le journal*.
-3. Tape une recherche produit (ex. « poulet ») et valide.
-   → Note l'URL appelée et regarde l'aperçu de la réponse : y a-t-il un JSON
-     avec les produits (id, libellé, prix) ?
-4. Clique sur **Ajouter au panier** d'un produit.
-   → Note l'URL, la méthode (POST), le corps envoyé, et les en-têtes
-     inhabituels (jeton CSRF, `X-...`).
-5. Clic droit sur la carte produit → **Inspecter** → note les classes CSS de :
-   la carte produit, son titre, le bouton d'ajout.
+Si jamais la détection échoue sur ton magasin, ouvre la console (F12) sur une
+page de résultats et tape :
+```js
+LeclercAdapter.diagnostic()
+```
+Tu verras le nombre de cartes détectées et ce qui a été extrait des trois
+premières. Envoie-moi cette sortie et j'ajuste.
 
-### B3. Reporter dans adapter.js
-Ouvre `extension/adapter.js`. Les instructions sont en tête de fichier.
-
-- **Cas 1 — le site a une API JSON interne** (le plus fiable) : décommente le
-  bloc `apiSearch` / `apiAddToCart` en bas du fichier et remplace les URLs et
-  les noms de champs par ceux relevés.
-- **Cas 2 — pas d'API exploitable** : ajuste les quatre sélecteurs de l'objet
-  `selectors` (`productCard`, `productTitle`, `addToCartBtn`, `searchInput`)
-  avec les classes relevées à l'étape B2.5.
-
-Puis `chrome://extensions` → bouton **recharger** (↻) sur l'extension.
-
-### B4. Utiliser
+### B3. Utiliser — le pilote automatique
 1. App → Panier → **Copier pour l'extension**.
 2. Clic sur l'icône de l'extension → colle dans la zone de texte.
 3. **Livraison à préparer** : si deux livraisons sont recommandées, le
    sélecteur affiche le créneau visé et le nombre d'articles de chacune.
 4. **Charger la liste**.
-5. Va sur le site Leclerc : le panneau flottant apparaît en bas à droite avec
-   le créneau visé et le premier article.
-6. Pour chaque article : **1. Chercher** → **2. Ajouter 1er résultat**
-   (ou **Passer**). Le compteur avance, le journal garde les 4 dernières lignes.
-7. À la fin : message de confirmation. **Tu vérifies le panier et tu paies
+5. Va sur le site Leclerc, connecté : le panneau flottant apparaît en bas à droite.
+6. Clique **« ▶ Remplir tout le panier »**. C'est tout : pour chaque article,
+   l'extension cherche, récolte les candidats, interroge Open Food Facts sur leur
+   composition, les note, retient le meilleur et l'ajoute, puis passe au suivant.
+   Une barre de progression suit l'avancement.
+7. Tu peux **mettre en pause** à tout moment, déplacer le curseur **prix ↔ santé**,
+   ou cliquer **« Choisir ce produit… »** pour trancher toi-même parmi les 5 meilleurs.
+8. À la fin : récapitulatif avec le total. **Tu vérifies le panier et tu paies
    toi-même** — l'extension ne s'active jamais sur une page de paiement.
+9. **« Copier les choix pour l'app »** → dans le Panier, **« Importer les choix »** :
+   les produits retenus deviennent des associations permanentes.
 
 ---
 
@@ -296,5 +289,6 @@ indépendamment du cache.
 | « Plan invalide après correction » | aléa du modèle | relancer la génération |
 | Sync poids impossible | URL/secret erronés | vérifier avec le `curl` de C2 |
 | Panneau extension absent | aucune liste chargée | popup → Charger la liste |
-| « Bouton Ajouter introuvable » | sélecteurs à ajuster | refaire B2/B3 |
+| « Aucun produit détecté » | structure du site inhabituelle | `LeclercAdapter.diagnostic()` en console |
+| Pilote arrêté en cours | page inattendue ou produit absent | reprendre à la main puis relancer |
 | Total estimé partiel (`*`) | produits non associés | associer les lignes `?` |

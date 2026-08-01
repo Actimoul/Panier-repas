@@ -473,3 +473,56 @@ input:focus-visible, select:focus-visible, textarea:focus-visible, .btn:focus-vi
 .day-btn.on { background: var(--basil); border-color: var(--basil-deep); color: #fff; font-weight: 600; }
 .day-btn:focus-visible { outline: 2px solid var(--basil); outline-offset: 1px; }
 .person .calc-box { margin-top: 14px; margin-bottom: 0; }
+
+/* ---------- tableau des menus (v1.9) ---------- */
+.seg { display: flex; gap: 0; margin: 4px 0 12px; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.seg-btn {
+  flex: 1; border: none; background: #fff; cursor: pointer;
+  font-family: var(--font-display); font-weight: 700; font-size: 0.8rem;
+  padding: 9px 6px; color: var(--ink-soft);
+}
+.seg-btn.on { background: var(--basil); color: #fff; }
+.seg-btn:focus-visible { outline: 2px solid var(--basil); outline-offset: -2px; }
+
+.menu-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 calc(var(--pad) * -1); padding: 0 var(--pad); }
+table.menu { border-collapse: separate; border-spacing: 4px; width: 100%; min-width: 560px; }
+table.menu th, table.menu td { padding: 0; }
+table.menu thead th {
+  font-family: var(--font-display); font-weight: 700; font-size: 0.72rem;
+  text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-soft);
+  padding-bottom: 2px; text-align: center;
+}
+table.menu .corner { width: 62px; }
+table.menu .row-h {
+  font-family: var(--font-mono); font-size: 0.72rem; color: var(--ink-soft);
+  text-align: left; white-space: nowrap; padding-right: 4px; vertical-align: middle;
+}
+table.menu td.meal {
+  background: hsl(var(--h) 42% 96%);
+  border: 1px solid hsl(var(--h) 38% 82%);
+  border-left: 3px solid hsl(var(--h) 45% 45%);
+  border-radius: 8px;
+  padding: 7px 8px;
+  cursor: pointer;
+  vertical-align: top;
+  min-width: 96px;
+}
+table.menu td.meal:hover { background: hsl(var(--h) 45% 92%); }
+table.menu td.meal:focus-visible { outline: 2px solid var(--basil); outline-offset: 1px; }
+table.menu .meal-name {
+  display: block; font-size: 0.76rem; font-weight: 600; line-height: 1.25;
+  color: var(--ink);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+table.menu .meal-macro { display: block; font-family: var(--font-mono); font-size: 0.68rem; color: var(--ink-soft); margin-top: 3px; }
+table.menu td.empty-cell {
+  text-align: center; color: var(--line); font-family: var(--font-mono); font-size: 0.8rem;
+  border: 1px dashed var(--line); border-radius: 8px;
+}
+table.menu tr.totals td {
+  text-align: center; padding: 5px 2px;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-mono); font-size: 0.78rem;
+}
+table.menu tr.totals td span { display: block; font-size: 0.68rem; color: var(--ink-soft); }
+.card.recipe.flash { box-shadow: 0 0 0 3px var(--basil); transition: box-shadow .3s; }

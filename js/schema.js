@@ -70,5 +70,52 @@ const PlanSchema = (() => {
     return { valid: errors.length === 0, errors };
   }
 
-  return { validate };
+  /* Variety audit, separate from schema validity: a repetitive plan is
+     valid JSON but a bad week.
+     Main meals (lunch/dinner) carry the strict rules; breakfast and snacks
+     are allowed to repeat — nobody minds eating the same porridge twice.
+     Returns { ok, problemes[] }. */
+  const REPAS_PRINCIPAUX = ['dejeuner', 'diner'];
+
+  function auditVariete(plan, maxRepetitions) {
+    const problemes = [];
+    const noms = Object.fromEntries((plan.recettes || []).map(r => [r.id, r.nom]));
+    const planning = plan.planning || [];
+
+    // 1. repetition ceiling, per meal category
+    const counts = new Map();   // "recette|categorie" -> n
+    for (const p of planning) {
+      const cat = REPAS_PRINCIPAUX.includes(p.repas) ? 'principal' : 'secondaire';
+      const key = `${p.recette_id}|${cat}`;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    for (const [key, n] of counts) {
+      const [id, cat] = key.split('|');
+      const plafond = cat === 'principal' ? maxRepetitions : Math.max(3, maxRepetitions * 2);
+      if (n > plafond) {
+        problemes.push(`« ${noms[id] || id} » revient ${n} fois en ${cat === 'principal' ? 'plat principal' : 'petit-déj/collation'} (maximum ${plafond})`);
+      }
+    }
+
+    // 2. same main dish two days running on the same slot
+    const bySlot = new Map();
+    for (const p of planning) bySlot.set(`${p.repas}|${p.jour}`, p.recette_id);
+    for (const p of planning) {
+      if (!REPAS_PRINCIPAUX.includes(p.repas)) continue;
+      if (bySlot.get(`${p.repas}|${p.jour - 1}`) === p.recette_id) {
+        problemes.push(`« ${noms[p.recette_id] || p.recette_id} » deux jours de suite au ${p.repas}`);
+      }
+    }
+
+    // 3. enough distinct main dishes overall
+    const principaux = new Set(planning.filter(p => REPAS_PRINCIPAUX.includes(p.repas)).map(p => p.recette_id));
+    const creneauxPrincipaux = planning.filter(p => REPAS_PRINCIPAUX.includes(p.repas)).length;
+    if (creneauxPrincipaux >= 6 && principaux.size < Math.ceil(creneauxPrincipaux / maxRepetitions)) {
+      problemes.push(`seulement ${principaux.size} plats principaux distincts pour ${creneauxPrincipaux} repas`);
+    }
+
+    return { ok: problemes.length === 0, problemes: [...new Set(problemes)] };
+  }
+
+  return { validate, auditVariete };
 })();
