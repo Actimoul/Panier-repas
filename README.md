@@ -315,3 +315,24 @@ donne le plat et ses calories, avec **une couleur par plat distinct** — les
 répétitions sautent aux yeux. Une ligne de totaux donne kcal et protéines par
 jour, et un badge annonce le nombre de plats différents. Touche une case pour
 sauter à la recette. Un sélecteur Tableau / Recettes bascule entre les deux vues.
+
+## v2.0 — Recette du repas, pas du batch
+
+Toucher une case du tableau ouvrait la recette complète, c'est-à-dire les
+quantités cumulées de toutes les fois où le plat revient dans la semaine —
+12 œufs pour des œufs brouillés du lundi matin.
+
+La fiche affiche désormais **le repas précis** : en-tête « MAR · PETIT-DÉJ »,
+puis les quantités ramenées aux couverts de ce créneau. Pour 1,6 couvert sur une
+recette prévue pour 4 : 5 œufs, 128 g de flocons, 320 ml de lait. Les unités
+comptables sont arrondies au demi le plus proche — on ne casse pas 4,8 œufs.
+
+Quand le plat revient ailleurs dans la semaine, un sélecteur **Ce repas /
+Tout préparer** bascule vers la version batch, et une note rappelle les autres
+créneaux concernés avec le total des couverts : utile quand tu veux cuisiner une
+seule fois pour plusieurs jours. Pour un plat unique, le sélecteur ne s'affiche
+pas.
+
+Les macros suivent le même principe : la fiche annonce les calories et protéines
+de la part réellement servie à ce repas, et le tableau affiche les kcal du
+créneau (pas de la portion de référence) avec le nombre de couverts.

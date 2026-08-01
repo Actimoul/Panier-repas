@@ -114,10 +114,11 @@
                   const r = byId[slot.recette_id];
                   if (!r) return '<td class="empty-cell">?</td>';
                   const h = hueOf(slot.recette_id);
-                  return `<td class="meal" data-rid="${esc(r.id)}" tabindex="0" role="button"
-                            style="--h:${h}" title="${esc(r.nom)}">
+                  const parts = slot.portions || 1;
+                  return `<td class="meal" data-rid="${esc(r.id)}" data-jour="${j}" data-repas="${esc(rt)}"
+                            tabindex="0" role="button" style="--h:${h}" title="${esc(r.nom)}">
                     <span class="meal-name">${esc(r.nom)}</span>
-                    <span class="meal-macro">${r.macros_par_portion.kcal} kcal</span>
+                    <span class="meal-macro">${Math.round(r.macros_par_portion.kcal * parts)} kcal${parts !== 1 ? ` · ${parts} pers.` : ''}</span>
                   </td>`;
                 }).join('')}
               </tr>`).join('')}
@@ -168,19 +169,11 @@
       renderSemaine();
     }));
 
-    /* Tapping a cell opens that recipe in the recipe view. */
+    /* Tapping a cell opens the recipe FOR THAT MEAL, scaled to its couverts. */
     view.querySelectorAll('.meal').forEach(cell => {
-      const open = () => {
-        semaineVue = 'recettes';
-        renderSemaine();
-        const target = document.getElementById(`rec-${cell.dataset.rid}`);
-        if (target) {
-          target.querySelector('details')?.setAttribute('open', '');
-          target.scrollIntoView({ block: 'center', behavior: 'smooth' });
-          target.classList.add('flash');
-          setTimeout(() => target.classList.remove('flash'), 1200);
-        }
-      };
+      const open = () => openRepasDialog(
+        plan, cell.dataset.rid, parseInt(cell.dataset.jour, 10), cell.dataset.repas
+      );
       cell.addEventListener('click', open);
       cell.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
@@ -189,6 +182,84 @@
 
     document.getElementById('btn-regenerate').addEventListener('click', generatePlan);
     document.getElementById('btn-to-basket').addEventListener('click', () => switchTab('panier'));
+  }
+
+  /* Recipe for ONE meal slot: quantities scaled from the batch down to the
+     couverts of that day/meal. A batch view stays one tap away, because when
+     several slots share a recipe you cook them together. */
+  function openRepasDialog(plan, recetteId, jour, repas) {
+    const r = plan.recettes.find(x => x.id === recetteId);
+    if (!r) return;
+    const planning = plan.planning || [];
+    const slot = planning.find(p => p.jour === jour && p.repas === repas && p.recette_id === recetteId);
+    const portions = slot?.portions || 1;
+    const ratio = portions / r.portions;
+
+    const autres = planning.filter(p => p.recette_id === recetteId && !(p.jour === jour && p.repas === repas));
+    const totalPortions = planning
+      .filter(p => p.recette_id === recetteId)
+      .reduce((a, p) => a + (p.portions || 1), 0);
+
+    const dlg = document.getElementById('dlg-match');
+    const body = document.getElementById('dlg-match-body');
+
+    function lignes(coef) {
+      return r.ingredients.map(i => {
+        const q = i.quantite * coef;
+        // On ne casse pas 4,8 œufs : les unités comptables s'arrondissent
+        // au demi le plus proche, et jamais à zéro.
+        const affich = i.unite === 'piece'
+          ? Math.max(0.5, Math.round(q * 2) / 2) + ' pc'
+          : Aggregator.fmtQty(q, i.unite);
+        return `<li><span>${esc(i.nom_canonique)}</span><b>${affich}</b>${
+          i.fond_de_placard ? ' <span class="hint" style="margin:0">(placard)</span>' : ''}</li>`;
+      }).join('');
+    }
+
+    const m = r.macros_par_portion;
+    function draw(mode) {
+      const coef = mode === 'repas' ? ratio : 1;
+      const parts = mode === 'repas' ? portions : r.portions;
+      body.innerHTML = `
+        <div class="repas-head">
+          <div class="repas-quand">${DAY_LABELS[jour - 1]} · ${MEAL_LABELS[repas] || repas}</div>
+          <h2>${esc(r.nom)}</h2>
+          <div class="repas-meta">
+            ${mode === 'repas'
+              ? `pour <b>${parts} couvert${parts > 1 ? 's' : ''}</b> · ${Math.round(m.kcal * parts)} kcal · ${Math.round(m.proteines_g * parts)} g prot`
+              : `préparation complète : <b>${parts} portions</b> · ${Math.round(m.kcal * parts)} kcal au total`}
+            ${r.temps_preparation_min || r.temps_cuisson_min
+              ? ` · ${(r.temps_preparation_min || 0) + (r.temps_cuisson_min || 0)} min` : ''}
+          </div>
+        </div>
+
+        ${autres.length ? `
+          <div class="seg" style="margin-bottom:12px">
+            <button class="seg-btn ${mode === 'repas' ? 'on' : ''}" data-mode="repas">Ce repas</button>
+            <button class="seg-btn ${mode === 'batch' ? 'on' : ''}" data-mode="batch">Tout préparer</button>
+          </div>` : ''}
+
+        <div class="sub-title" style="margin-top:0">Ingrédients</div>
+        <ul class="ing-list">${lignes(coef)}</ul>
+
+        <div class="sub-title">Préparation</div>
+        <ol class="etapes">${r.etapes.map(e => `<li>${esc(e)}</li>`).join('')}</ol>
+
+        ${autres.length ? `<p class="hint">Ce plat revient aussi : ${
+          autres.map(p => `${DAY_LABELS[p.jour - 1]} ${MEAL_LABELS[p.repas] || p.repas}`).join(', ')
+        }.${mode === 'repas' ? ` En le préparant d'un coup (${Math.round(totalPortions * 10) / 10} couverts au total), tu ne cuisines qu'une fois.` : ''}</p>` : ''}
+
+        <div class="dialog-actions">
+          <button class="btn primary" id="rp-close">Fermer</button>
+        </div>`;
+
+      body.querySelectorAll('.seg-btn[data-mode]').forEach(b =>
+        b.addEventListener('click', () => draw(b.dataset.mode)));
+      body.querySelector('#rp-close').addEventListener('click', () => dlg.close());
+    }
+
+    draw('repas');
+    dlg.showModal();
   }
 
   async function generatePlan() {
