@@ -119,6 +119,7 @@ const Aggregator = (() => {
       version: 2,
       genere_le: new Date().toISOString(),
       semaine: plan.semaine.date_debut,
+      enseigne: options?.enseigne || null,
       pref_sante: options?.prefSante ?? 0.5,
       budget_max_article: options?.budgetMaxArticle || null,
       livraisons: (delivery?.livraisons || []).map(d => ({

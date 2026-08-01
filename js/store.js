@@ -84,7 +84,7 @@ const Store = (() => {
 
     getSettings: () => ({
       apiKey: '', model: 'claude-sonnet-4-6', workerUrl: '', workerSecret: '',
-      prefSante: 0.5, budgetMaxArticle: null,
+      prefSante: 0.5, budgetMaxArticle: null, enseigne: 'intermarche',
       ...read(KEYS.settings, {})
     }),
     setSettings: (s) => write(KEYS.settings, s),

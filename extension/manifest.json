@@ -1,15 +1,20 @@
 {
   "manifest_version": 3,
-  "name": "Panier Repas → Leclerc",
-  "version": "0.4.0",
-  "description": "Remplit ton panier Leclerc Drive à partir de la liste générée par Panier Repas. S'arrête toujours avant le paiement.",
+  "name": "Panier Repas",
+  "version": "0.5.0",
+  "description": "Remplit ton panier de courses en ligne à partir de la liste générée par Panier Repas. Choisit le meilleur rapport qualité/prix et s'arrête toujours avant le paiement.",
   "permissions": [
     "storage",
     "activeTab"
   ],
   "host_permissions": [
+    "https://*.intermarche.com/*",
     "https://*.leclercdrive.fr/*",
     "https://*.e-leclerc.com/*",
+    "https://*.carrefour.fr/*",
+    "https://*.auchan.fr/*",
+    "https://*.houra.fr/*",
+    "https://*.coursesu.com/*",
     "https://world.openfoodfacts.org/*"
   ],
   "action": {
@@ -19,8 +24,13 @@
   "content_scripts": [
     {
       "matches": [
+        "https://*.intermarche.com/*",
         "https://*.leclercdrive.fr/*",
-        "https://*.e-leclerc.com/*"
+        "https://*.e-leclerc.com/*",
+        "https://*.carrefour.fr/*",
+        "https://*.auchan.fr/*",
+        "https://*.houra.fr/*",
+        "https://*.coursesu.com/*"
       ],
       "js": [
         "scoring.js",

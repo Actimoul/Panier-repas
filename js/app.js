@@ -6,7 +6,15 @@
   let currentTab = 'semaine';
   let generating = false;
 
-  const LECLERC_SEARCH = (q) => `https://www.leclercdrive.fr/recherche.aspx?TexteRecherche=${encodeURIComponent(q)}`;
+  const STORE_URLS = {
+    intermarche: (q) => `https://www.intermarche.com/recherche/${encodeURIComponent(q)}`,
+    leclerc: (q) => `https://www.leclercdrive.fr/recherche.aspx?TexteRecherche=${encodeURIComponent(q)}`,
+    carrefour: (q) => `https://www.carrefour.fr/s?q=${encodeURIComponent(q)}`,
+    auchan: (q) => `https://www.auchan.fr/recherche?text=${encodeURIComponent(q)}`,
+    houra: (q) => `https://www.houra.fr/recherche?q=${encodeURIComponent(q)}`,
+    coursesu: (q) => `https://www.coursesu.com/recherche?text=${encodeURIComponent(q)}`
+  };
+  const STORE_SEARCH = (q) => (STORE_URLS[Store.getSettings().enseigne] || STORE_URLS.intermarche)(q);
 
   /* ---------- helpers ---------- */
   function toast(msg, isError = false) {
@@ -421,7 +429,7 @@
       </div>
       ${deliveryCard}
       <div class="ticket">
-        <div class="ticket-header">E.LECLERC · SEMAINE ${esc(plan.semaine.date_debut)}</div>
+        <div class="ticket-header">${esc((Store.getSettings().enseigne || 'intermarche').toUpperCase())} · SEMAINE ${esc(plan.semaine.date_debut)}</div>
         ${lines || '<p>Rien à acheter — tout est en stock.</p>'}
         <div class="ticket-total"><span>TOTAL ESTIMÉ</span><span>${total.toFixed(2)}€${complete ? '' : ' *'}</span></div>
         ${complete ? '' : '<div class="ticket-foot">* partiel : associe les produits (lignes "?") pour un total complet</div>'}
@@ -444,7 +452,7 @@
     document.getElementById('btn-copy-export').addEventListener('click', async () => {
       const st = Store.getSettings();
       const payload = Aggregator.buildExport(items, plan, delivery, {
-        prefSante: st.prefSante, budgetMaxArticle: st.budgetMaxArticle
+        enseigne: st.enseigne, prefSante: st.prefSante, budgetMaxArticle: st.budgetMaxArticle
       });
       try {
         await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
@@ -590,7 +598,7 @@
       <h2>Associer « ${esc(name)} »</h2>
       ${current ? `<p class="hint">Actuellement : ${esc(current.libelle)} (${current.pack_quantite} ${esc(current.pack_unite)}${typeof current.prix_eur === 'number' ? ', ' + current.prix_eur.toFixed(2) + '€' : ''})</p>` : ''}
       ${current?.justification ? `<div class="calc-box"><div class="calc-main">Choisi automatiquement${current.score ? ` — ${current.score}/100` : ''}</div><div class="calc-detail">${esc(current.justification)}</div></div>` : ''}
-      <a class="match-option" href="${LECLERC_SEARCH(name)}" target="_blank" rel="noopener">🔎 Chercher « ${esc(name)} » sur Leclerc Drive</a>
+      <a class="match-option" href="${STORE_SEARCH(name)}" target="_blank" rel="noopener">🔎 Chercher « ${esc(name)} » en ligne</a>
       <p class="hint">Trouve le produit sur le site, puis renseigne-le ici :</p>
       <label>Libellé produit <input id="m-libelle" value="${current ? esc(current.libelle) : ''}" placeholder="Filet de poulet x2 Marque Repère" /></label>
       <div class="grid-2">
@@ -1081,6 +1089,7 @@
     document.getElementById('set-model').value = s.model;
     document.getElementById('set-worker-url').value = s.workerUrl;
     document.getElementById('set-worker-secret').value = s.workerSecret;
+    document.getElementById('set-enseigne').value = s.enseigne || 'intermarche';
     document.getElementById('set-pref-sante').value = s.prefSante ?? 0.5;
     document.getElementById('set-budget-article').value = s.budgetMaxArticle ?? '';
     updatePrefLabel();
@@ -1094,6 +1103,7 @@
           model: document.getElementById('set-model').value,
           workerUrl: document.getElementById('set-worker-url').value.trim(),
           workerSecret: document.getElementById('set-worker-secret').value.trim(),
+          enseigne: document.getElementById('set-enseigne').value,
           prefSante: parseFloat(document.getElementById('set-pref-sante').value),
           budgetMaxArticle: parseFloat(document.getElementById('set-budget-article').value) || null
         });

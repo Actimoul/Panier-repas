@@ -44,6 +44,8 @@
     const done = state.cursor >= total;
     const current = state.articles[state.cursor];
     const pct = Math.round((Math.min(state.cursor, total) / total) * 100);
+    const e = StoreAdapter.enseigne();
+    const enseigneLigne = `<div class="pr-store">${e ? e.nom : '⚠ enseigne non reconnue'}</div>`;
     const creneau = state.creneau
       ? `<div class="pr-slot">🚚 ${state.creneau.label} — ${state.creneau.date}</div>` : '';
     const logLines = state.log.slice(-5)
@@ -56,6 +58,7 @@
       return `
         <div class="pr-head"><strong>Panier Repas</strong><span>${total}/${total}</span>
           <button id="pr-close" title="Fermer">✕</button></div>
+        ${enseigneLigne}
         ${creneau}
         <div class="pr-done">✅ Panier rempli — ${state.choix.length} produits, ${totalEur.toFixed(2)} €.<br>
           Vérifie puis paie <b>toi-même</b>.
@@ -67,6 +70,7 @@
     return `
       <div class="pr-head"><strong>Panier Repas</strong><span>${state.cursor}/${total}</span>
         <button id="pr-close" title="Fermer">✕</button></div>
+      ${enseigneLigne}
       ${creneau}
       <div class="pr-bar"><div class="pr-bar-fill" style="width:${pct}%"></div></div>
       <div class="pr-current">
@@ -163,7 +167,7 @@
 
   async function analyse() {
     const current = state.articles[state.cursor];
-    const raw = LeclercAdapter.harvestCandidates(8);
+    const raw = StoreAdapter.harvestCandidates(8);
     if (!raw.length) throw new Error('Aucun produit détecté sur cette page');
     setStatus(`${raw.length} candidats — composition…`);
     await Scoring.enrich(raw, (d, t) => setStatus(`Composition ${d}/${t}…`));
@@ -182,7 +186,7 @@
     const current = state.articles[state.cursor];
     try {
       setStatus('Ajout au panier…');
-      await LeclercAdapter.addByIndex(choice.index, ranked);
+      await StoreAdapter.addByIndex(choice.index, ranked);
       state.choix.push({
         nom_canonique: current.nom_canonique,
         libelle: choice.libelle,
@@ -225,7 +229,7 @@
         save();
         setStatus(`Recherche « ${current.recherche} »…`);
         await new Promise(r => setTimeout(r, 400));
-        location.href = LeclercAdapter.searchPageUrl(current.recherche);
+        location.href = StoreAdapter.searchPageUrl(current.recherche);
         return; // page unloads here
       }
       const ranked = await analyse();

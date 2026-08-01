@@ -62,3 +62,7 @@
 #pr-panel .pr-bar-fill { height: 100%; background: #2F6B3C; transition: width .3s; }
 #pr-panel .pr-wide.pr-stop { background: #D2481F; }
 #pr-panel .pr-wide.pr-stop:hover { background: #A83816; }
+#pr-panel .pr-store {
+  font-size: 10.5px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.08em; color: #4B5450; margin-bottom: 6px;
+}

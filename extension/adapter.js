@@ -1,5 +1,5 @@
 /* ============================================================
-   LECLERC SITE ADAPTER — auto-calibrating
+   ADAPTER ENSEIGNE — auto-calibrant, multi-magasins
    ------------------------------------------------------------
    Ne demande AUCUN réglage manuel. Au lieu de sélecteurs codés
    en dur (qui cassent à chaque refonte du site), l'adapter
@@ -9,14 +9,49 @@
    2. il remonte l'arbre DOM jusqu'à trouver le niveau où ces
       nœuds ont des voisins de même signature (mêmes classes) —
       c'est la grille de produits
-   3. dans chaque carte, il identifie le titre (texte le plus
-      long hors prix), le prix, le prix au kg, le code-barres
-      et le bouton d'ajout (par son intitulé, pas sa classe)
+   3. dans chaque carte, il identifie le titre, le prix, le prix
+      au kg, le code-barres et le bouton d'ajout (par son
+      intitulé, pas sa classe)
 
-   Si le site expose une API JSON interne, renseigne-la dans
-   `api` plus bas : elle sera utilisée en priorité.
+   La seule partie propre à chaque enseigne est l'URL de
+   recherche, déclarée dans ENSEIGNES ci-dessous. L'enseigne
+   active est reconnue automatiquement d'après le domaine.
    ============================================================ */
-const LeclercAdapter = {
+
+const ENSEIGNES = {
+  intermarche: {
+    nom: 'Intermarché',
+    domaines: ['intermarche.com'],
+    search: (q) => `https://www.intermarche.com/recherche/${encodeURIComponent(q)}`
+  },
+  leclerc: {
+    nom: 'E.Leclerc',
+    domaines: ['leclercdrive.fr', 'e-leclerc.com'],
+    search: (q) => `${location.origin}/recherche.aspx?TexteRecherche=${encodeURIComponent(q)}`
+  },
+  carrefour: {
+    nom: 'Carrefour',
+    domaines: ['carrefour.fr'],
+    search: (q) => `https://www.carrefour.fr/s?q=${encodeURIComponent(q)}`
+  },
+  auchan: {
+    nom: 'Auchan',
+    domaines: ['auchan.fr'],
+    search: (q) => `https://www.auchan.fr/recherche?text=${encodeURIComponent(q)}`
+  },
+  houra: {
+    nom: 'Houra',
+    domaines: ['houra.fr'],
+    search: (q) => `https://www.houra.fr/recherche?q=${encodeURIComponent(q)}`
+  },
+  coursesu: {
+    nom: 'Courses U',
+    domaines: ['coursesu.com'],
+    search: (q) => `https://www.coursesu.com/recherche?text=${encodeURIComponent(q)}`
+  }
+};
+
+const StoreAdapter = {
 
   /* Optionnel : si tu repères une API interne, remplis ceci. */
   api: {
@@ -26,8 +61,21 @@ const LeclercAdapter = {
     mapProduct: null      // ex. (p) => ({ libelle: p.nom, prix_eur: p.prix, ean: p.ean })
   },
 
+  /* Enseigne active, déduite du domaine courant. */
+  enseigne() {
+    const host = location.hostname;
+    for (const [cle, e] of Object.entries(ENSEIGNES)) {
+      if (e.domaines.some(d => host.endsWith(d))) return { cle, ...e };
+    }
+    return null;
+  },
+
+  /* URL de recherche de l'enseigne courante. Repli générique si le
+     domaine n'est pas répertorié : la plupart des sites acceptent ?q= */
   searchPageUrl(query) {
-    return `${location.origin}/recherche.aspx?TexteRecherche=${encodeURIComponent(query)}`;
+    const e = this.enseigne();
+    if (e) return e.search(query);
+    return `${location.origin}/recherche?q=${encodeURIComponent(query)}`;
   },
 
   /* --- Détection générique -------------------------------- */
@@ -189,6 +237,8 @@ const LeclercAdapter = {
   /* Diagnostic : à lancer dans la console si quelque chose cloche. */
   diagnostic() {
     const cards = this.findProductGrid();
+    const e = this.enseigne();
+    console.log(`[Panier Repas] enseigne : ${e ? e.nom : 'non reconnue (' + location.hostname + ')'}`);
     console.log(`[Panier Repas] ${cards.length} cartes détectées`);
     cards.slice(0, 3).forEach((c, i) => console.log(` #${i}`, {
       titre: this.extractTitle(c),
@@ -203,4 +253,7 @@ const LeclercAdapter = {
 
 /* Exposition explicite : les fichiers de content script partagent le même
    monde isolé, mais on ne dépend pas de la portée lexicale de haut niveau. */
-globalThis.LeclercAdapter = LeclercAdapter;
+globalThis.StoreAdapter = StoreAdapter;
+/* Alias de compatibilité avec les versions précédentes. */
+globalThis.LeclercAdapter = StoreAdapter;
+globalThis.ENSEIGNES = ENSEIGNES;

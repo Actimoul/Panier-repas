@@ -336,3 +336,23 @@ pas.
 Les macros suivent le même principe : la fiche annonce les calories et protéines
 de la part réellement servie à ce repas, et le tableau affiche les kcal du
 créneau (pas de la portion de référence) avec le nombre de couverts.
+
+## v2.1 — Multi-enseignes
+
+Leclerc ne livre pas partout en Île-de-France. L'adapter n'ayant jamais rien
+connu de Leclerc (il détecte les prix et en déduit la grille produits, sans
+sélecteur codé en dur), le passage au multi-enseignes ne touche qu'une chose :
+l'URL de recherche.
+
+**Enseignes déclarées** : Intermarché, E.Leclerc, Carrefour, Auchan, Houra,
+Courses U. L'enseigne active se choisit dans ⚙ Réglages ; l'extension reconnaît
+automatiquement celle du site où elle se trouve et l'affiche en tête du panneau.
+Pour un domaine non répertorié, elle bascule sur une URL de recherche générique
+(`/recherche?q=`), qui marche sur beaucoup de sites.
+
+Ajouter une enseigne : une entrée dans `ENSEIGNES` en tête de
+`extension/adapter.js`, plus le domaine dans `host_permissions` et
+`content_scripts.matches` du manifeste. Rien d'autre.
+
+L'en-tête du ticket, le lien de recherche du dialogue produit et le payload
+d'export portent désormais le nom de l'enseigne choisie.
